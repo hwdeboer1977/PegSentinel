@@ -9,15 +9,15 @@ import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {LPFeeLibrary} from "v4-core/src/libraries/LPFeeLibrary.sol";
 
-// Anvil:
-// 1. set -a; source .env.anvil; set +a
-// 2. forge script script/03_Addliquidity.s.sol --rpc-url http://127.0.0.1:8545 --private-key 0xYOUR_PRIVATE_KEY --broadcast -vvvv --via-ir
-
-
 import {BaseScript} from "./base/BaseScript.sol";
 import {LiquidityHelpers} from "./base/LiquidityHelpers.sol";
 
-contract AddLiquidityScript is BaseScript, LiquidityHelpers {
+// Anvil:
+// 1. set -a; source .env.anvil; set +a
+// 2. forge script script/03b_RemoveLiquidity.s.sol --rpc-url http://127.0.0.1:8545 --private-key 0xYOUR_PRIVATE_KEY --broadcast -vvvv --via-ir
+
+
+contract RemoveLiquidityScript is BaseScript, LiquidityHelpers {
     using CurrencyLibrary for Currency;
     using StateLibrary for IPoolManager;
 
@@ -55,12 +55,12 @@ contract AddLiquidityScript is BaseScript, LiquidityHelpers {
             token1Amount
         );
 
-        uint256 amount0Max = token0Amount + 1;
-        uint256 amount1Max = token1Amount + 1;
+        uint256 amount0Min = 0;  // Set to 0 for testing, or calculate slippage
+        uint256 amount1Min = 0;
 
-        // Build INCREASE_LIQUIDITY action bundle
+        // Build DECREASE_LIQUIDITY action bundle
         (bytes memory actions, bytes[] memory p) =
-            _increaseLiquidityParams(184, liquidity, amount0Max, amount1Max, hookData);
+            _decreaseLiquidityParams(184, liquidity, amount0Min, amount1Min, deployerAddress, hookData);
 
         // multicall payload
         bytes[] memory calls = new bytes[](1);
@@ -70,11 +70,8 @@ contract AddLiquidityScript is BaseScript, LiquidityHelpers {
             block.timestamp + 60
         );
 
-        uint256 valueToPass = currency0.isAddressZero() ? amount0Max : 0;
-
         vm.startBroadcast();
-        tokenApprovals();
-        positionManager.multicall{value: valueToPass}(calls);
+        positionManager.multicall(calls);
         vm.stopBroadcast();
     }
 }

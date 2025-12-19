@@ -33,6 +33,43 @@ contract LiquidityHelpers is BaseScript {
         return (actions, params);
     }
 
+   function _increaseLiquidityParams(
+        uint256 tokenId,
+        uint256 liquidity,
+        uint256 amount0Max,
+        uint256 amount1Max,
+        bytes memory hookData
+    ) internal view returns (bytes memory, bytes[] memory) {
+        bytes memory actions = abi.encodePacked(
+            uint8(Actions.INCREASE_LIQUIDITY), uint8(Actions.CLOSE_CURRENCY),   uint8(Actions.CLOSE_CURRENCY)
+        );
+
+        bytes[] memory params = new bytes[](3);
+        params[0] = abi.encode(tokenId, liquidity, amount0Max, amount1Max, hookData);
+        params[1] = abi.encode(currency0);
+        params[2] = abi.encode(currency1);
+
+        return (actions, params);
+    }
+
+    function _decreaseLiquidityParams(
+        uint256 tokenId,
+        uint256 liquidity,
+        uint256 amount0Min,
+        uint256 amount1Min,
+        address recipient,
+        bytes memory hookData
+    ) internal view returns (bytes memory actions, bytes[] memory params) {
+        actions = abi.encodePacked(
+            uint8(Actions.DECREASE_LIQUIDITY),
+            uint8(Actions.TAKE_PAIR)
+        );
+
+        params = new bytes[](2);  // Remove "bytes[]" - just assign to the return variable
+        params[0] = abi.encode(tokenId, liquidity, amount0Min, amount1Min, hookData);
+        params[1] = abi.encode(currency0, currency1, recipient);
+    }
+
     function tokenApprovals() public {
         if (!currency0.isAddressZero()) {
             token0.approve(address(permit2), type(uint256).max);

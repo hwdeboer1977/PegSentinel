@@ -5,7 +5,7 @@ import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
 import {BaseScript} from "./base/BaseScript.sol";
 
-import {PegHook} from "../src/PegHook.sol";
+import {PegSentinelHook} from "../src/PegSentinelHook.sol";
 
 import "forge-std/Script.sol";
 
@@ -36,10 +36,10 @@ contract DeployHookScript is BaseScript {
         // Use token0 and token1 from BaseScript
         bytes memory constructorArgs = abi.encode(poolManager, address(token0), address(token1));
         (address hookAddress, bytes32 salt) =
-            HookMiner.find(CREATE2_FACTORY, flags, type(PegHook).creationCode, constructorArgs);
+            HookMiner.find(CREATE2_FACTORY, flags, type(PegSentinelHook).creationCode, constructorArgs);
 
         vm.startBroadcast();
-        PegHook hook = new PegHook{salt: salt}(poolManager, address(token0), address(token1));
+        PegSentinelHook hook = new PegSentinelHook{salt: salt}(poolManager, address(token0), address(token1));
         vm.stopBroadcast();
 
         console.log("Hook address: ", hookAddress);

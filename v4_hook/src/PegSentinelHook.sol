@@ -19,7 +19,7 @@ interface IERC20Metadata {
     function decimals() external view returns (uint8);
 }
 
-contract PegHook is BaseHook {
+contract PegSentinelHook is BaseHook {
     using LPFeeLibrary for uint24;
     using PoolIdLibrary for PoolKey;
 
@@ -80,7 +80,7 @@ contract PegHook is BaseHook {
     }
 
     function _beforeInitialize(address, PoolKey calldata key, uint160)
-        internal override
+        internal override pure
         returns (bytes4)
     {
         if (!key.fee.isDynamicFee()) revert MustUseDynamicFee();

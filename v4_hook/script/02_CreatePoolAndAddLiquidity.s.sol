@@ -10,7 +10,7 @@ import {BaseScript} from "./base/BaseScript.sol";
 import {LiquidityHelpers} from "./base/LiquidityHelpers.sol";
 import {console2} from "forge-std/console2.sol";
 import {IERC20} from "forge-std/interfaces/IERC20.sol";
-
+import "forge-std/Script.sol";
 
 // forge script script/02_CreatePoolAndAddLiquidity.s.sol --rpc-url arbitrum_sepolia --private-key 0xYOUR_PRIVATE_KEY --broadcast -vvvv --via-ir
 
@@ -72,8 +72,8 @@ contract CreatePoolAndAddLiquidityScript is BaseScript, LiquidityHelpers {
 
 
     // --- liquidity position configuration --- //
-    uint256 public token0Amount = 10e6;
-    uint256 public token1Amount = 10e6;
+    uint256 public token0Amount = 100000e6;
+    uint256 public token1Amount = 100000e6;
 
     // range of the position, must be a multiple of tickSpacing
     int24 tickLower;
@@ -132,11 +132,19 @@ contract CreatePoolAndAddLiquidityScript is BaseScript, LiquidityHelpers {
         // If the pool is an ETH pair, native tokens are to be transferred
         uint256 valueToPass = currency0.isAddressZero() ? amount0Max : 0;
 
+        
+        // Get tokenId before minting
+        uint256 tokenId = positionManager.nextTokenId();
+        console.log("Next Token ID (will be yours):", tokenId);
+
         vm.startBroadcast();
         tokenApprovals();
 
         // Multicall to atomically create pool & add liquidity
         positionManager.multicall{value: valueToPass}(params);
+
         vm.stopBroadcast();
+
+        console.log("Position Token ID:", tokenId);
     }
 }
