@@ -4,9 +4,9 @@ pragma solidity ^0.8.26;
 import "forge-std/Script.sol";
 import "forge-std/console2.sol";
 
-// 1. set -a; source .env.anvil; set +a
-// 2. forge script script/06_AdjustLiquidity.s.sol:AdjustLiquidityScript --rpc-url $RPC_URL --broadcast -vv --via-ir
-
+// 1) set -a; source .env.anvil; set +a
+// Change regime? export TARGET_REGIME=1
+// 2) forge script script/06_AdjustLiquidity.s.sol:AdjustLiquidityScript --rpc-url $RPC_URL --broadcast -vv --via-ir
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
@@ -28,25 +28,27 @@ interface IPermit2 {
     function approve(address token, address spender, uint160 amount, uint48 expiration) external;
 }
 
-/// @notice Rebalance a vault-owned Uniswap v4 position:
-/// 1) Reads current liquidity from PoolManager.getPositionInfo (needs old ticks + salt scheme)
-/// 2) Decreases (withdraws) liquidity to the vault
-/// 3) Mints a NEW position to the vault with a new range centered around current price
+/// @notice Adjust liquidity for PegSentinelVault:
+/// - Reads current active regime from vault.activeRegime()
+/// - Auto-selects target regime based on currentTick, OR override with env TARGET_REGIME
+/// - Decreases liquidity from the CURRENT active position (Normal->normalPosition, Mild/Severe->supportPosition)
+/// - Then either:
+///     A) INCREASE existing target position if it exists AND tickLower/tickUpper match target range
+///     B) Otherwise MINT a NEW position to the vault and update vault metadata
 ///
-/// Required env vars:
+/// Env vars:
+/// Required:
 /// - PRIVATE_KEY
 /// - VAULT_ADDRESS
-/// - TOKEN_ID_OLD
-/// - OLD_TICK_LOWER
-/// - OLD_TICK_UPPER
-/// - AMOUNT0_MIN (suggest 0 for POC)
-/// - AMOUNT1_MIN (suggest 0 for POC)
 ///
-/// Optional env vars:
-/// - LP_FEE (default DYNAMIC_FEE_FLAG)
-/// - TICK_SPACING (default 60)
-/// - RANGE_MULT_NEW (default 1000)
-/// - DEADLINE_SECONDS (default 300)
+/// Optional:
+/// - TARGET_REGIME (uint): 0=Normal, 1=Mild, 2=Severe. If unset/invalid => auto.
+/// - AMOUNT0_MIN (uint) default 0
+/// - AMOUNT1_MIN (uint) default 0
+/// - DEADLINE_SECONDS (uint) default 300
+/// - LP_FEE (uint) default DYNAMIC_FEE_FLAG
+/// - TICK_SPACING (uint) default 60
+/// - FORCE_MINT (bool) default false
 contract AdjustLiquidityScript is Script, BaseScript, LiquidityHelpers {
     using CurrencyLibrary for Currency;
     using PoolIdLibrary for PoolKey;
@@ -57,17 +59,13 @@ contract AdjustLiquidityScript is Script, BaseScript, LiquidityHelpers {
         uint256 pk = uint256(vm.envBytes32("PRIVATE_KEY"));
         address vaultAddr = vm.envAddress("VAULT_ADDRESS");
 
-        uint256 tokenIdOld = vm.envUint("TOKEN_ID_OLD");
-        int24 oldTickLower = int24(int256(vm.envInt("OLD_TICK_LOWER")));
-        int24 oldTickUpper = int24(int256(vm.envInt("OLD_TICK_UPPER")));
-
         uint256 amount0Min = vm.envOr("AMOUNT0_MIN", uint256(0));
         uint256 amount1Min = vm.envOr("AMOUNT1_MIN", uint256(0));
+        uint256 deadlineSeconds = vm.envOr("DEADLINE_SECONDS", uint256(300));
 
         uint24 lpFee = uint24(vm.envOr("LP_FEE", uint256(LPFeeLibrary.DYNAMIC_FEE_FLAG)));
         int24 tickSpacing = int24(int256(vm.envOr("TICK_SPACING", uint256(60))));
-        int24 rangeMultNew = int24(int256(vm.envOr("RANGE_MULT_NEW", uint256(1000))));
-        uint256 deadlineSeconds = vm.envOr("DEADLINE_SECONDS", uint256(300));
+        bool forceMint = vm.envOr("FORCE_MINT", false);
 
         PegSentinelVault vault = PegSentinelVault(payable(vaultAddr));
 
@@ -83,31 +81,54 @@ contract AdjustLiquidityScript is Script, BaseScript, LiquidityHelpers {
         PoolId pid = poolKey.toId();
         bytes memory hookData = new bytes(0);
 
-        // ---------- read pool state ----------
+        // ---------- pool state ----------
         (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(pid);
         int24 currentTick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
 
-        // ---------- read OLD position liquidity from PoolManager ----------
-        // IMPORTANT: salt scheme must match your CheckLiquidityScript
-        bytes32 salt = bytes32(tokenIdOld);
-
-        (uint128 liqOld,,) =
-            poolManager.getPositionInfo(pid, address(positionManager), oldTickLower, oldTickUpper, salt);
+        // ---------- decide regimes ----------
+        PegSentinelVault.Regime currentRegime = vault.activeRegime();
+        PegSentinelVault.Regime autoTarget = _determineTargetRegime(vault, currentTick);
+        PegSentinelVault.Regime targetRegime = _overrideTargetRegimeIfProvided(autoTarget);
 
         console2.log("=== AdjustLiquidity ===");
+        console2.log("vault:", vaultAddr);
+        console2.log("currentTick:", int256(currentTick));
+        console2.log("currentRegime:", uint256(currentRegime));
+        console2.log("targetRegime :", uint256(targetRegime));
+        console2.log("forceMint    :", forceMint);
+
+        // ---------- get CURRENT active position (where liquidity currently is) ----------
+        (uint256 tokenIdOld, int24 oldTickLower, int24 oldTickUpper, bytes32 saltOld, bool oldActive) =
+            _getPositionForRegime(vault, currentRegime);
+
+        require(oldActive, "old position not active");
+        require(tokenIdOld != 0, "old tokenId=0");
+
+        // ---------- read old liquidity from PoolManager ----------
+        (uint128 liqOld,,) = poolManager.getPositionInfo(
+            pid,
+            address(positionManager),
+            oldTickLower,
+            oldTickUpper,
+            saltOld
+        );
+
         console2.log("tokenIdOld:", tokenIdOld);
         console2.log("oldTickLower:", int256(oldTickLower));
         console2.log("oldTickUpper:", int256(oldTickUpper));
-        console2.log("salt(bytes32(tokenId)):");
-        console2.logBytes32(salt);
+        console2.log("saltOld:");
+        console2.logBytes32(saltOld);
         console2.log("liqOld:", uint256(liqOld));
-        console2.log("currentTick:", int256(currentTick));
+        require(liqOld > 0, "Old position liquidity=0 (wrong ticks/salt or empty)");
 
-        require(liqOld > 0, "Old position liquidity=0 (wrong ticks or salt scheme?)");
+        // ---------- target ticks from vault range ----------
+        (int24 newTickLower, int24 newTickUpper, bool enabledTarget) = _getRangeForRegime(vault, targetRegime);
+        require(enabledTarget, "target range not enabled");
+        require(newTickLower < newTickUpper, "bad target ticks");
 
-        // ---------- compute NEW ticks centered around current price ----------
-        int24 newTickLower = truncateTickSpacing((currentTick - rangeMultNew * tickSpacing), tickSpacing);
-        int24 newTickUpper = truncateTickSpacing((currentTick + rangeMultNew * tickSpacing), tickSpacing);
+        // Optional safety: ensure target ticks align to script tickSpacing
+        // (your vault also validates multiples if pool.tickSpacing is set)
+        require(newTickLower % tickSpacing == 0 && newTickUpper % tickSpacing == 0, "target ticks not aligned");
 
         console2.log("newTickLower:", int256(newTickLower));
         console2.log("newTickUpper:", int256(newTickUpper));
@@ -115,7 +136,7 @@ contract AdjustLiquidityScript is Script, BaseScript, LiquidityHelpers {
         // ---------- broadcast ----------
         vm.startBroadcast(pk);
 
-        // allowlist targets
+        // ---- allowlist targets the vault will call (owner-only in vault) ----
         vault.setAllowedTarget(address(positionManager), true);
         vault.setAllowedTarget(address(permit2), true);
 
@@ -131,44 +152,8 @@ contract AdjustLiquidityScript is Script, BaseScript, LiquidityHelpers {
             vault.setAllowedTarget(t1, true);
         }
 
-        // Ensure Permit2 approvals exist FROM THE VAULT (idempotent)
-        if (!currency0.isAddressZero()) {
-            vault.execute(
-                t0,
-                0,
-                abi.encodeWithSelector(IERC20.approve.selector, address(permit2), type(uint256).max)
-            );
-            vault.execute(
-                address(permit2),
-                0,
-                abi.encodeWithSelector(
-                    IPermit2.approve.selector,
-                    t0,
-                    address(positionManager),
-                    type(uint160).max,
-                    type(uint48).max
-                )
-            );
-        }
-
-        if (!currency1.isAddressZero()) {
-            vault.execute(
-                t1,
-                0,
-                abi.encodeWithSelector(IERC20.approve.selector, address(permit2), type(uint256).max)
-            );
-            vault.execute(
-                address(permit2),
-                0,
-                abi.encodeWithSelector(
-                    IPermit2.approve.selector,
-                    t1,
-                    address(positionManager),
-                    type(uint160).max,
-                    type(uint48).max
-                )
-            );
-        }
+        // ---- approvals FROM THE VAULT (idempotent) ----
+        _ensurePermit2Approvals(vault, t0, t1);
 
         // ---------- 1) DECREASE old liquidity to vault ----------
         (bytes memory decActions, bytes[] memory decParams) =
@@ -189,7 +174,7 @@ contract AdjustLiquidityScript is Script, BaseScript, LiquidityHelpers {
 
         vault.execute(address(positionManager), 0, decCall);
 
-        // ---------- vault balances after decrease ----------
+        // ---------- balances now in vault ----------
         uint256 bal0 = currency0.isAddressZero() ? vaultAddr.balance : IERC20(t0).balanceOf(vaultAddr);
         uint256 bal1 = currency1.isAddressZero() ? vaultAddr.balance : IERC20(t1).balanceOf(vaultAddr);
 
@@ -198,46 +183,204 @@ contract AdjustLiquidityScript is Script, BaseScript, LiquidityHelpers {
         console2.log("bal1:", bal1);
         require(bal0 > 0 || bal1 > 0, "No funds in vault after decrease");
 
-        // ---------- 2) MINT new position to vault ----------
-        uint128 liqNew = LiquidityAmounts.getLiquidityForAmounts(
-            sqrtPriceX96,
-            TickMath.getSqrtPriceAtTick(newTickLower),
-            TickMath.getSqrtPriceAtTick(newTickUpper),
-            bal0,
-            bal1
-        );
+        // ---------- 2) add liquidity into TARGET position ----------
+        // Normal => normalPosition, Mild/Severe => supportPosition
+        (uint256 tokenIdTarget, int24 tLo, int24 tHi, bytes32 tSalt, bool tActive) =
+            _getPositionForRegime(vault, targetRegime);
 
-        uint256 amount0Max = bal0 + 1;
-        uint256 amount1Max = bal1 + 1;
+        bool canIncreaseExisting =
+            (!forceMint) &&
+            tActive &&
+            tokenIdTarget != 0 &&
+            tLo == newTickLower &&
+            tHi == newTickUpper;
 
-        uint256 tokenIdNew = positionManager.nextTokenId();
-        console2.log("Next Token ID (new):", tokenIdNew);
-
-        (bytes memory mintActions, bytes[] memory mintParams) =
-            _mintLiquidityParams(
-                poolKey,
-                newTickLower,
-                newTickUpper,
-                uint256(liqNew),
-                amount0Max,
-                amount1Max,
-                vaultAddr,
-                hookData
+        if (canIncreaseExisting) {
+            // -------- INCREASE existing target position --------
+            uint128 liqAdd = LiquidityAmounts.getLiquidityForAmounts(
+                sqrtPriceX96,
+                TickMath.getSqrtPriceAtTick(newTickLower),
+                TickMath.getSqrtPriceAtTick(newTickUpper),
+                bal0,
+                bal1
             );
 
-        bytes memory mintCall = abi.encodeWithSelector(
-            positionManager.modifyLiquidities.selector,
-            abi.encode(mintActions, mintParams),
-            block.timestamp + deadlineSeconds
-        );
+            console2.log("Increasing existing target tokenId:", tokenIdTarget);
+            console2.log("liqAdd:", uint256(liqAdd));
+            console2.log("targetSalt:");
+            console2.logBytes32(tSalt);
 
-        uint256 valueToPass = currency0.isAddressZero() ? amount0Max : 0;
-        vault.execute(address(positionManager), valueToPass, mintCall);
+            (bytes memory incActions, bytes[] memory incParams) =
+                _increaseLiquidityParams(
+                    tokenIdTarget,
+                    uint256(liqAdd),
+                    bal0 + 1,
+                    bal1 + 1,
+                    hookData
+                );
+
+            bytes memory incCall = abi.encodeWithSelector(
+                positionManager.modifyLiquidities.selector,
+                abi.encode(incActions, incParams),
+                block.timestamp + deadlineSeconds
+            );
+
+            uint256 valueToPass = currency0.isAddressZero() ? (bal0 + 1) : 0;
+            vault.execute(address(positionManager), valueToPass, incCall);
+        } else {
+            // -------- MINT new target position --------
+            uint128 liqNew = LiquidityAmounts.getLiquidityForAmounts(
+                sqrtPriceX96,
+                TickMath.getSqrtPriceAtTick(newTickLower),
+                TickMath.getSqrtPriceAtTick(newTickUpper),
+                bal0,
+                bal1
+            );
+
+            uint256 tokenIdNew = positionManager.nextTokenId();
+            bytes32 saltNew = bytes32(tokenIdNew);
+
+            console2.log("Minting NEW target tokenId:", tokenIdNew);
+            console2.log("liqNew:", uint256(liqNew));
+
+            (bytes memory mintActions, bytes[] memory mintParams) =
+                _mintLiquidityParams(
+                    poolKey,
+                    newTickLower,
+                    newTickUpper,
+                    uint256(liqNew),
+                    bal0 + 1,
+                    bal1 + 1,
+                    vaultAddr,
+                    hookData
+                );
+
+            bytes memory mintCall = abi.encodeWithSelector(
+                positionManager.modifyLiquidities.selector,
+                abi.encode(mintActions, mintParams),
+                block.timestamp + deadlineSeconds
+            );
+
+            uint256 valueToPass = currency0.isAddressZero() ? (bal0 + 1) : 0;
+            vault.execute(address(positionManager), valueToPass, mintCall);
+
+            // update vault meta
+            if (targetRegime == PegSentinelVault.Regime.Normal) {
+                vault.setNormalPosition(tokenIdNew, newTickLower, newTickUpper, saltNew, true);
+            } else {
+                vault.setSupportPosition(tokenIdNew, newTickLower, newTickUpper, saltNew, true);
+            }
+
+            console2.log("Updated vault position meta for target regime.");
+        }
+
+        // ---------- finalize ----------
+        vault.setActiveRegime(targetRegime);
 
         vm.stopBroadcast();
 
-        console2.log("Rebalance complete.");
-        console2.log("old tokenId:", tokenIdOld);
-        console2.log("new tokenId:", tokenIdNew);
-     }
+        console2.log("Done. activeRegime now:", uint256(targetRegime));
+    }
+
+    // ------------------------------------------------------------
+    // Permit2 approvals (executed by the vault)
+    // ------------------------------------------------------------
+
+    function _ensurePermit2Approvals(PegSentinelVault vault, address t0, address t1) internal {
+        // token.approve(permit2, max) + permit2.approve(token, positionManager, max160, max48)
+        if (t0 != address(0)) {
+            vault.execute(
+                t0,
+                0,
+                abi.encodeWithSelector(IERC20.approve.selector, address(permit2), type(uint256).max)
+            );
+            vault.execute(
+                address(permit2),
+                0,
+                abi.encodeWithSelector(
+                    IPermit2.approve.selector,
+                    t0,
+                    address(positionManager),
+                    type(uint160).max,
+                    type(uint48).max
+                )
+            );
+        }
+
+        if (t1 != address(0)) {
+            vault.execute(
+                t1,
+                0,
+                abi.encodeWithSelector(IERC20.approve.selector, address(permit2), type(uint256).max)
+            );
+            vault.execute(
+                address(permit2),
+                0,
+                abi.encodeWithSelector(
+                    IPermit2.approve.selector,
+                    t1,
+                    address(positionManager),
+                    type(uint160).max,
+                    type(uint48).max
+                )
+            );
+        }
+    }
+
+    // ------------------------------------------------------------
+    // Regime / range / position helpers (tuple-based)
+    // ------------------------------------------------------------
+
+    function _getRangeForRegime(PegSentinelVault vault, PegSentinelVault.Regime r)
+        internal
+        view
+        returns (int24 lo, int24 hi, bool en)
+    {
+        if (r == PegSentinelVault.Regime.Normal) return vault.normalRange();
+        if (r == PegSentinelVault.Regime.Mild) return vault.mildRange();
+        return vault.severeRange();
+    }
+
+    function _getPositionForRegime(PegSentinelVault vault, PegSentinelVault.Regime r)
+        internal
+        view
+        returns (uint256 tokenId, int24 lo, int24 hi, bytes32 salt, bool active)
+    {
+        // Normal => normalPosition
+        // Mild/Severe => supportPosition (shared)
+        if (r == PegSentinelVault.Regime.Normal) return vault.normalPosition();
+        return vault.supportPosition();
+    }
+
+    function _overrideTargetRegimeIfProvided(PegSentinelVault.Regime autoRegime)
+        internal
+        view
+        returns (PegSentinelVault.Regime)
+    {
+        // If TARGET_REGIME not set, envOr returns 999 and we keep autoRegime.
+        uint256 raw = vm.envOr("TARGET_REGIME", uint256(999));
+        if (raw <= 2) return PegSentinelVault.Regime(raw);
+        return autoRegime;
+    }
+
+    /// @dev Simple auto-selection based on your configured tick bands.
+    /// Uses:
+    /// - normalRange.tickLower as first “below peg” trigger
+    /// - severeRange.tickUpper as deeper trigger
+    function _determineTargetRegime(PegSentinelVault vault, int24 currentTick)
+        internal
+        view
+        returns (PegSentinelVault.Regime)
+    {
+        (int24 nLo,, bool nEn) = vault.normalRange();
+        (, int24 sHi, bool sEn) = vault.severeRange();
+        (, , bool mEn) = vault.mildRange();
+        require(nEn && mEn && sEn, "ranges not configured");
+
+        if (currentTick < nLo) {
+            if (currentTick < sHi) return PegSentinelVault.Regime.Severe;
+            return PegSentinelVault.Regime.Mild;
+        }
+        return PegSentinelVault.Regime.Normal;
+    }
 }

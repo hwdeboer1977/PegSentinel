@@ -28,6 +28,7 @@ interface IPermit2 {
     function approve(address token, address spender, uint160 amount, uint48 expiration) external;
 }
 
+
 contract MintPositionToVault is Script, BaseScript, LiquidityHelpers {
     using CurrencyLibrary for Currency;
     using StateLibrary for IPoolManager;
@@ -37,7 +38,7 @@ contract MintPositionToVault is Script, BaseScript, LiquidityHelpers {
 
     function run() external {
         // ---- env ----
-        bytes32 pk = vm.envBytes32("PRIVATE_KEY");
+        uint256 pk = uint256(vm.envBytes32("PRIVATE_KEY"));
         address vaultAddr = vm.envAddress("VAULT_ADDRESS");
         uint256 amount0 = vm.envUint("AMOUNT0");
         uint256 amount1 = vm.envUint("AMOUNT1");
@@ -55,54 +56,30 @@ contract MintPositionToVault is Script, BaseScript, LiquidityHelpers {
 
         bytes memory hookData = new bytes(0);
 
-        // ---- compute ticks & liquidity ----
-        (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolKey.toId());
-        int24 currentTick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
+        // ---- read Normal range from vault (must already be configured) ----
+        (int24 tickLower, int24 tickUpper, bool enabled) = vault.normalRange();
+        require(enabled, "vault.normalRange not enabled");
+        require(tickLower < tickUpper, "invalid ticks");
+        require(tickLower % tickSpacing == 0 && tickUpper % tickSpacing == 0, "ticks not aligned");
 
-        int24 tickLower = truncateTickSpacing((currentTick - 1000 * tickSpacing), tickSpacing);
-        int24 tickUpper = truncateTickSpacing((currentTick + 1000 * tickSpacing), tickSpacing);
+        // Optional: log current tick/price context
+        (uint160 sqrtPriceX96Now,,,) = poolManager.getSlot0(poolKey.toId());
+        int24 currentTick = TickMath.getTickAtSqrtPrice(sqrtPriceX96Now);
 
-        uint128 liq = LiquidityAmounts.getLiquidityForAmounts(
-            sqrtPriceX96,
-            TickMath.getSqrtPriceAtTick(tickLower),
-            TickMath.getSqrtPriceAtTick(tickUpper),
-            amount0,
-            amount1
-        );
+        console2.log("=== MintPositionToVault (Normal) ===");
+        console2.log("vault:", vaultAddr);
+        console2.log("currentTick:", int256(currentTick));
+        console2.log("tickLower:", int256(tickLower));
+        console2.log("tickUpper:", int256(tickUpper));
+        console2.log("amount0:", amount0);
+        console2.log("amount1:", amount1);
 
-        uint256 amount0Max = amount0 + 1;
-        uint256 amount1Max = amount1 + 1;
+        vm.startBroadcast(pk);
 
-        // ---- build MINT_POSITION action bundle ----
-        (bytes memory actions, bytes[] memory params) =
-            _mintLiquidityParams(
-                poolKey,
-                tickLower,
-                tickUpper,
-                uint256(liq),
-                amount0Max,
-                amount1Max,
-                vaultAddr, // << recipient/owner of the position NFT
-                hookData
-            );
-
-        // Payload for positionManager.modifyLiquidities(abi.encode(actions, params), deadline)
-        bytes memory mintCall = abi.encodeWithSelector(
-            positionManager.modifyLiquidities.selector,
-            abi.encode(actions, params),
-            block.timestamp + 60
-        );
-
-        // Only needed if currency0 is native ETH
-        uint256 valueToPass = currency0.isAddressZero() ? amount0Max : 0;
-
-        vm.startBroadcast(uint256(pk));
-
-        // ---- allowlist targets the vault will call ----
+        // --- allowlist targets the vault will call ---
         vault.setAllowedTarget(address(positionManager), true);
         vault.setAllowedTarget(address(permit2), true);
 
-        // Unwrap Currency -> token address (your v4-core uses Currency.unwrap(...) style)
         address t0 = address(0);
         address t1 = address(0);
 
@@ -115,17 +92,13 @@ contract MintPositionToVault is Script, BaseScript, LiquidityHelpers {
             vault.setAllowedTarget(t1, true);
         }
 
-        // ---- approvals must be done BY THE VAULT ----
-        // Mirror LiquidityHelpers.tokenApprovals(), but executed via vault.execute()
-
-        if (!currency0.isAddressZero()) {
-            // token0.approve(permit2, max)
+        // ---- approvals FROM VAULT (idempotent) ----
+        if (t0 != address(0)) {
             vault.execute(
                 t0,
                 0,
                 abi.encodeWithSelector(IERC20.approve.selector, address(permit2), type(uint256).max)
             );
-            // permit2.approve(token0, positionManager, max160, max48)
             vault.execute(
                 address(permit2),
                 0,
@@ -139,7 +112,7 @@ contract MintPositionToVault is Script, BaseScript, LiquidityHelpers {
             );
         }
 
-        if (!currency1.isAddressZero()) {
+        if (t1 != address(0)) {
             vault.execute(
                 t1,
                 0,
@@ -158,22 +131,50 @@ contract MintPositionToVault is Script, BaseScript, LiquidityHelpers {
             );
         }
 
-        // Get tokenId before minting
-        uint256 tokenId = positionManager.nextTokenId();
-        console2.log("Next Token ID (will be yours):", tokenId);
+        // ---- compute liquidity at current price ----
+        uint128 liq = LiquidityAmounts.getLiquidityForAmounts(
+            sqrtPriceX96Now,
+            TickMath.getSqrtPriceAtTick(tickLower),
+            TickMath.getSqrtPriceAtTick(tickUpper),
+            amount0,
+            amount1
+        );
 
-        // ---- mint FROM THE VAULT ----
-        bytes memory ret = vault.execute(address(positionManager), valueToPass, mintCall);
+        uint256 amount0Max = amount0 + 1;
+        uint256 amount1Max = amount1 + 1;
+
+        (bytes memory actions, bytes[] memory params) =
+            _mintLiquidityParams(
+                poolKey,
+                tickLower,
+                tickUpper,
+                uint256(liq),
+                amount0Max,
+                amount1Max,
+                vaultAddr, // vault owns the position NFT
+                hookData
+            );
+
+        bytes memory mintCall = abi.encodeWithSelector(
+            positionManager.modifyLiquidities.selector,
+            abi.encode(actions, params),
+            block.timestamp + 60
+        );
+
+        uint256 valueToPass = currency0.isAddressZero() ? amount0Max : 0;
+
+        uint256 tokenId = positionManager.nextTokenId();
+        console2.log("Minting tokenId:", tokenId);
+
+        vault.execute(address(positionManager), valueToPass, mintCall);
+
+        // ---- register the new baseline position in the vault ----
+        vault.setNormalPosition(tokenId, tickLower, tickUpper, bytes32(tokenId), true);
+        vault.setActiveRegime(PegSentinelVault.Regime.Normal);
 
         vm.stopBroadcast();
 
-        console2.log("Minted new position to vault:", vaultAddr);
-        console2.log("tickLower:", tickLower);
-        console2.log("tickUpper:", tickUpper);
-        console2.log("amount0:", amount0);
-        console2.log("amount1:", amount1);
-        console2.logBytes(ret);
-
-        
+        console2.log("Minted NORMAL position to vault.");
+        console2.log("tokenId:", tokenId);
     }
 }

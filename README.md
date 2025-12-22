@@ -1,27 +1,27 @@
 # PegSentinel
 
-**Peg-aware execution and adaptive liquidity for stablecoin markets on Uniswap v4**
+**Peg-aware execution + regime-based liquidity management for stablecoin pools on Uniswap v4**
 
-PegSentinel is a Uniswap v4–native stabilization system that combines **directional dynamic fees** with an **active liquidity vault** to defend stablecoin pegs during market stress — without breaking permissionless liquidity or pool composability.
+PegSentinel is a Uniswap v4 research prototype that explores **on-chain peg defense** using two tightly integrated layers:
+
+1. **Peg-aware swap execution (hook layer)**  
+2. **Regime-based liquidity management (vault layer)**
+
+The system is designed for **stablecoin pairs** (e.g. USDC/USDT) and focuses on how liquidity *should move* when a peg weakens.
 
 ---
 
-## Overview
+## High-Level Idea
 
-Stablecoin pools are vulnerable to:
-- asymmetric toxic orderflow,
-- MEV-driven peg attacks,
-- liquidity fragmentation during stress events.
+Stablecoin depegs are not binary events — they evolve through **stress regimes**.
 
-PegSentinel introduces a **two-layer architecture**:
+PegSentinel models this explicitly:
 
-1. **PegSentinelHook** — enforces peg-aware swap execution at the hook level  
-2. **PegSentinelVault** — actively repositions liquidity to where it is most effective
+- Under normal conditions, liquidity sits symmetrically around the peg
+- As the peg weakens, liquidity shifts into **support ranges**
+- Capital is deployed where arbitrage helps restore the peg most efficiently
 
-The hook defines *policy*.  
-The vault executes *capital deployment*.  
-
-This separation is a deliberate design choice for auditability, safety, and composability.
+Uniswap v4 hooks make this possible **without breaking pool composability**.
 
 ---
 
@@ -36,117 +36,217 @@ Uniswap v4 Pool
   ├─▶ PegSentinelHook
   │     - observes price vs peg
   │     - applies directional fees
-  │     - enforces stress regimes
+  │     - (future) enforces stress modes
   │
-  └─▶ PegSentinelVault (optional LP)
-        - repositions liquidity
-        - biases liquidity toward peg recovery zones
-        - earns pool fees + incentives
+  └─▶ PegSentinelVault
+        - owns LP NFT positions
+        - stores regime ranges on-chain
+        - rebalances liquidity between regimes
 ```
 
 ---
 
 ## Core Components
 
-### 1. PegSentinelHook (Hook Layer)
+### 1. PegSentinelHook (execution layer)
 
-**Responsibility:** Peg-aware execution policy
+**Status:** early / evolving
 
-Implemented using Uniswap v4 hooks (primarily `beforeSwap`).
+Responsibilities:
+- Observe pool price relative to peg
+- Apply **directional dynamic fees**
+  - swaps *away* from peg → higher fee
+  - swaps *toward* peg → lower fee
+- (Planned) expose peg stress signals to off-chain or vault logic
 
-#### Features
-- **Directional dynamic fees**
-  - Swaps *away from the peg* → higher fees
-  - Swaps *toward the peg* → lower fees
-- **Stress regimes**
-  - normal
-  - soft stress
-  - hard stress
-- **Extreme protection (optional)**
-  - max trade size
-  - throttling
-  - circuit breaker logic
-
-#### Effects
-- Orderflow is economically steered toward peg recovery
-- Toxic flow and MEV become more expensive
-- Works for **all LPs**, permissionlessly
-- No vault or opt-in required
-
-> This is the baseline peg defense layer.
+This layer affects **all swaps**, even for LPs that do not use the vault.
 
 ---
 
-### 2. PegSentinelVault (Liquidity Layer)
+### 2. PegSentinelVault (liquidity layer)
 
-**Responsibility:** Active peg support via adaptive liquidity placement
+**Status:** functional POC++ (on-chain state, off-chain control)
 
-The PegSentinelVault is a **non-exclusive LP** that deploys capital into the pool.
+The vault is:
+- Protocol-owned
+- Non-ERC4626
+- No user deposits
+- No share accounting
 
-#### During peg stress
-- Liquidity is repositioned toward the **support zone**
-- Liquidity placement becomes **asymmetric**
-  - biased above or below the peg, depending on deviation
-- Capital is concentrated where arbitrage restores the peg most efficiently
-
-#### Effects
-- Depth appears where it is economically needed
-- Arbitrage becomes cheaper in the *correct direction*
-- Peg recovers with lower capital loss
-
-> This is the active stabilization layer.
+It acts as an **active LP manager** for one Uniswap v4 pool.
 
 ---
 
-## Design Principles
+## Regime Model (On-chain)
 
-- **Hook sets policy, vault executes**
-- **Permissionless by default**
-- **Non-invasive under normal conditions**
-- **Composable with external vaults and LP strategies**
-- **Not possible in Uniswap v2 or v3**
+PegSentinel explicitly models three regimes.
+
+These are stored **on-chain in the vault** as tick ranges.
+
+| Regime  | Purpose              | Tick Range (example) |
+|--------|----------------------|----------------------|
+| Normal | Stable peg            | `[-240, +240]`       |
+| Mild   | Soft depeg support    | `[-540, 0]`          |
+| Severe | Deep depeg defense    | `[-1620, -300]`      |
+
+Configured during vault deployment via `setRange()`.
+
+```solidity
+vault.setRange(Regime.Normal, -240, 240, true);
+vault.setRange(Regime.Mild, -540, 0, true);
+vault.setRange(Regime.Severe, -1620, -300, true);
+```
 
 ---
 
-## Why Uniswap v4
+## LP Position Model
 
-PegSentinel relies on v4-specific primitives:
+The vault tracks **LP NFTs explicitly**.
 
-- Hook-level fee control
-- Hook-level state (stress modes)
-- Native composability with vault-based LP strategies
+### Stored on-chain:
 
-This design is **not implementable** in earlier Uniswap versions.
+```solidity
+struct PositionMeta {
+    uint256 tokenId;
+    int24 tickLower;
+    int24 tickUpper;
+    bytes32 salt;
+    bool active;
+}
+```
+
+### Positions
+
+- **normalPosition**
+  - Active when `activeRegime == Normal`
+- **supportPosition**
+  - Shared by `Mild` and `Severe`
+  - Only one support position exists at a time
+
+This keeps the state minimal while still supporting regime transitions.
 
 ---
 
-## Intended Use Cases
+## Lifecycle
 
-- Stablecoin pairs (USDC/DAI, USDT/USDC, algorithmic stables)
-- L2-native stable liquidity
-- Institutional-grade liquidity with policy constraints
-- Research into on-chain monetary policy primitives
+### 1. Deploy Vault
+- Token addresses set
+- Regime ranges initialized
+- Active regime set to `Normal`
+
+### 2. Fund Vault
+- Protocol treasury sends token0 / token1
+- Vault holds idle capital
+
+### 3. Mint Initial Position
+- `MintPositionToVault.s.sol`
+- Uses `vault.normalRange()`
+- Mints the **Normal LP position**
+- Registers it via `setNormalPosition()`
+
+---
+
+### 4. Rebalancing (`06_AdjustLiquidity.s.sol`)
+
+This script performs **full regime-aware rebalancing**.
+
+#### What it does:
+
+1. Reads current pool price (`currentTick`)
+2. Determines:
+   - `currentRegime`
+   - `targetRegime` (auto or via `TARGET_REGIME`)
+3. Withdraws liquidity from the **currently active position**
+4. Either:
+   - increases liquidity in an existing target position, or
+   - mints a new LP NFT
+5. Updates vault metadata
+6. Sets `activeRegime`
+
+#### Manual override
+
+You can force transitions:
+
+```bash
+TARGET_REGIME=1 forge script script/06_AdjustLiquidity.s.sol ...
+TARGET_REGIME=2 forge script script/06_AdjustLiquidity.s.sol ...
+```
+
+This is intentional — **strategy lives off-chain**, execution is on-chain.
+
+---
+
+## Example Rebalance Log
+
+```
+currentTick: 0
+currentRegime: Normal
+targetRegime : Normal
+
+Decreasing liquidity from tokenId 185
+Increasing liquidity in tokenId 185
+
+activeRegime now: Normal
+```
+
+Or, when forced:
+
+```
+TARGET_REGIME=1
+
+currentRegime: Normal
+targetRegime : Mild
+
+Liquidity moved from normalPosition → supportPosition
+activeRegime now: Mild
+```
+
+---
+
+## Design Philosophy
+
+- **On-chain state, off-chain strategy**
+- Vault is dumb, scripts are smart
+- No hidden automation
+- Fully inspectable transitions
+- Reproducible with Forge scripts
+
+This mirrors how **real protocol treasury operations** are executed today.
+
+---
+
+## What Exists Today
+
+✅ On-chain regime ranges  
+✅ Vault-owned LP NFTs  
+✅ Manual + automatic regime switching  
+✅ Increase vs mint logic  
+✅ Deterministic liquidity movement  
+✅ Full Foundry script pipeline
+
+---
+
+## What’s Next (Planned)
+
+- Hook-driven automatic regime signals
+- Keeper automation
+- Time-based hysteresis
+- Multi-pool support
+- Risk caps per regime
+- Simulation & stress testing
 
 ---
 
 ## Status
 
-⚠️ **Early-stage / Research prototype**
+⚠️ **Research / Prototype**
 
-- Hook logic under active development
-- Vault strategy subject to iteration
 - Not audited
 - Not production-ready
-
----
-
-## Disclaimer
-
-This repository is experimental research software.
-Do not use in production or with real funds.
+- Intended for experimentation and design exploration
 
 ---
 
 ## One-liner
 
-> **PegSentinel combines directional dynamic fees that steer orderflow back toward the peg with an active liquidity vault that repositions capital during stress events to provide targeted peg support.**
+> **PegSentinel is a Uniswap v4 research system that models stablecoin depegs as explicit regimes and repositions protocol-owned liquidity accordingly to support peg recovery.**

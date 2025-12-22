@@ -7,9 +7,9 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-/// @title PegSentinelVault (POC)
-/// @notice Protocol-owned vault that holds token0/token1 and can execute restricted actions (e.g., LP add/remove)
-/// @dev For a POC: no user shares, no ERC4626, no accounting. Owner = protocol treasury/multisig.
+/// @title PegSentinelVault (POC++)
+/// @notice Protocol-owned vault that holds token0/token1 and stores LP configuration + regime ranges on-chain.
+/// @dev No user shares, no ERC4626, no accounting. Owner = protocol treasury/multisig.
 contract PegSentinelVault is Ownable, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -29,6 +29,78 @@ contract PegSentinelVault is Ownable, Pausable, ReentrancyGuard {
     /// @notice optional cooldown for rebalances (anti-thrash)
     uint256 public rebalanceCooldown;
     uint256 public lastRebalanceAt;
+
+    /*//////////////////////////////////////////////////////////////
+                           UNISWAP V4 CONFIG
+    //////////////////////////////////////////////////////////////*/
+
+    struct PoolConfig {
+        address hook;            // PegSentinelHook
+        address permit2;         // Permit2
+        address positionManager; // v4 PositionManager
+
+        uint24 fee;              // e.g. DYNAMIC_FEE_FLAG
+        int24 tickSpacing;       // e.g. 60
+    }
+
+    PoolConfig public pool;
+
+    event PoolConfigUpdated(
+        address hook,
+        address permit2,
+        address positionManager,
+        uint24 fee,
+        int24 tickSpacing
+    );
+
+    /*//////////////////////////////////////////////////////////////
+                         REGIMES + RANGES (TICKS)
+    //////////////////////////////////////////////////////////////*/
+
+    enum Regime {
+        Normal,
+        Mild,
+        Severe
+    }
+
+    struct RangeConfig {
+        int24 tickLower;
+        int24 tickUpper;
+        bool enabled;
+    }
+
+    RangeConfig public normalRange; // price ~ 0.98–1.02
+    RangeConfig public mildRange;   // price ~ 0.95–1.00
+    RangeConfig public severeRange; // price ~ 0.85–0.97
+
+    Regime public activeRegime;
+
+    event RangeUpdated(Regime indexed regime, int24 tickLower, int24 tickUpper, bool enabled);
+    event ActiveRegimeUpdated(Regime previous, Regime current);
+
+    /*//////////////////////////////////////////////////////////////
+                         POSITION METADATA (VAULT-OWNED)
+    //////////////////////////////////////////////////////////////*/
+
+    struct PositionMeta {
+        uint256 tokenId;
+        int24 tickLower;
+        int24 tickUpper;
+        bytes32 salt;  // used with PoolManager.getPositionInfo; your current scheme is bytes32(tokenId)
+        bool active;
+    }
+
+    PositionMeta public normalPosition;
+    PositionMeta public supportPosition; // used for mild OR severe at any moment
+
+    event PositionUpdated(
+        bytes32 indexed label, // "NORMAL" / "SUPPORT"
+        uint256 tokenId,
+        int24 tickLower,
+        int24 tickUpper,
+        bytes32 salt,
+        bool active
+    );
 
     /*//////////////////////////////////////////////////////////////
                                  EVENTS
@@ -54,6 +126,8 @@ contract PegSentinelVault is Ownable, Pausable, ReentrancyGuard {
     error CooldownActive(uint256 nextRebalanceAt);
     error ZeroAddress();
     error CallFailed(address target, bytes returndata);
+    error InvalidTickSpacing(int24 tickSpacing);
+    error InvalidTicks(int24 tickLower, int24 tickUpper);
 
     /*//////////////////////////////////////////////////////////////
                               MODIFIERS
@@ -101,6 +175,92 @@ contract PegSentinelVault is Ownable, Pausable, ReentrancyGuard {
     function unpause() external onlyOwner { _unpause(); }
 
     /*//////////////////////////////////////////////////////////////
+                         UNISWAP CONFIG SETTERS
+    //////////////////////////////////////////////////////////////*/
+
+    function setPoolConfig(
+        address hook,
+        address permit2,
+        address positionManager,
+        uint24 fee,
+        int24 tickSpacing
+    ) external onlyOwner {
+        if (permit2 == address(0) || positionManager == address(0)) revert ZeroAddress();
+        if (tickSpacing <= 0) revert InvalidTickSpacing(tickSpacing);
+
+        pool = PoolConfig({
+            hook: hook,
+            permit2: permit2,
+            positionManager: positionManager,
+            fee: fee,
+            tickSpacing: tickSpacing
+        });
+
+        emit PoolConfigUpdated(hook, permit2, positionManager, fee, tickSpacing);
+    }
+
+    function setRange(Regime regime, int24 tickLower, int24 tickUpper, bool enabled) external onlyOwner {
+        _validateTicks(tickLower, tickUpper);
+
+        if (regime == Regime.Normal) normalRange = RangeConfig(tickLower, tickUpper, enabled);
+        else if (regime == Regime.Mild) mildRange = RangeConfig(tickLower, tickUpper, enabled);
+        else severeRange = RangeConfig(tickLower, tickUpper, enabled);
+
+        emit RangeUpdated(regime, tickLower, tickUpper, enabled);
+    }
+
+    function setActiveRegime(Regime next) external onlyKeeperOrOwner {
+        Regime prev = activeRegime;
+        activeRegime = next;
+        emit ActiveRegimeUpdated(prev, next);
+    }
+
+    /// @dev ticks should be multiples of tickSpacing once set
+    function _validateTicks(int24 tickLower, int24 tickUpper) internal view {
+        if (tickLower >= tickUpper) revert InvalidTicks(tickLower, tickUpper);
+
+        int24 ts = pool.tickSpacing;
+        if (ts > 0) {
+            // ensure multiples of spacing (Solidity int division truncates toward zero; fine for our typical multiples)
+            if ((tickLower / ts) * ts != tickLower) revert InvalidTicks(tickLower, tickUpper);
+            if ((tickUpper / ts) * ts != tickUpper) revert InvalidTicks(tickLower, tickUpper);
+        }
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                       POSITION METADATA SETTERS
+    //////////////////////////////////////////////////////////////*/
+
+    function setNormalPosition(
+        uint256 tokenId,
+        int24 tickLower,
+        int24 tickUpper,
+        bytes32 salt,
+        bool active
+    ) external onlyKeeperOrOwner {
+        _validateTicks(tickLower, tickUpper);
+        normalPosition = PositionMeta(tokenId, tickLower, tickUpper, salt, active);
+        emit PositionUpdated("NORMAL", tokenId, tickLower, tickUpper, salt, active);
+    }
+
+    function setSupportPosition(
+        uint256 tokenId,
+        int24 tickLower,
+        int24 tickUpper,
+        bytes32 salt,
+        bool active
+    ) external onlyKeeperOrOwner {
+        _validateTicks(tickLower, tickUpper);
+        supportPosition = PositionMeta(tokenId, tickLower, tickUpper, salt, active);
+        emit PositionUpdated("SUPPORT", tokenId, tickLower, tickUpper, salt, active);
+    }
+
+    /// @notice Convenience for your current scheme: salt == bytes32(tokenId)
+    function saltFromTokenId(uint256 tokenId) external pure returns (bytes32) {
+        return bytes32(tokenId);
+    }
+
+    /*//////////////////////////////////////////////////////////////
                                FUNDING
     //////////////////////////////////////////////////////////////*/
 
@@ -127,8 +287,7 @@ contract PegSentinelVault is Ownable, Pausable, ReentrancyGuard {
                               CORE EXECUTION
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Execute a call to an allowed target (e.g., PositionManager / Router).
-    /// @dev This is the “escape hatch” that keeps the POC simple and flexible.
+    /// @notice Execute a call to an allowed target (e.g., PositionManager / Permit2 / ERC20 approvals).
     function execute(address target, uint256 value, bytes calldata data)
         public
         onlyKeeperOrOwner
@@ -145,7 +304,7 @@ contract PegSentinelVault is Ownable, Pausable, ReentrancyGuard {
         return ret;
     }
 
-    /// @notice A thin wrapper: typically decrease liquidity, then increase liquidity with a new range.
+    /// @notice A thin wrapper: typically decrease liquidity, then add/increase liquidity.
     /// @dev You pass the exact calldata you want to run on your PositionManager/Router.
     function rebalance(
         address targetA,
@@ -159,9 +318,6 @@ contract PegSentinelVault is Ownable, Pausable, ReentrancyGuard {
             if (block.timestamp < next) revert CooldownActive(next);
         }
 
-        // Typically:
-        // A = decrease/remove liquidity (and maybe collect)
-        // B = add/increase liquidity at new ticks
         if (callA.length != 0) {
             if (!isAllowedTarget[targetA]) revert TargetNotAllowed(targetA);
             (bool okA, bytes memory retA) = targetA.call(callA);

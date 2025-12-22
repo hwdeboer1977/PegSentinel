@@ -97,9 +97,11 @@ contract CreatePoolAndAddLiquidityScript is BaseScript, LiquidityHelpers {
 
         int24 currentTick = TickMath.getTickAtSqrtPrice(startingPrice);
 
-        tickLower = truncateTickSpacing((currentTick - rangeMult * tickSpacing), tickSpacing);
-        tickUpper = truncateTickSpacing((currentTick + rangeMult * tickSpacing), tickSpacing);
-
+        // tickLower = truncateTickSpacing((currentTick - rangeMult * tickSpacing), tickSpacing);
+        // tickUpper = truncateTickSpacing((currentTick + rangeMult * tickSpacing), tickSpacing);
+        tickLower = -180;
+        tickUpper = 180;
+        
         // Converts token amounts to liquidity units
         uint128 liquidity = LiquidityAmounts.getLiquidityForAmounts(
             startingPrice,
