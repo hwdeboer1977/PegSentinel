@@ -1,2 +1,6 @@
-*.env*
+backend/node_modules/
 node_modules/
+*:Zone.Identifier
+*.Zone.Identifier
+.env
+.env.*
