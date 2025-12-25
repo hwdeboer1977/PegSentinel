@@ -17,6 +17,10 @@ const VaultABI = [
   "function normalPosition() view returns (uint256 tokenId, int24 tickLower, int24 tickUpper, bytes32 salt, bool active)",
   "function supportPosition() view returns (uint256 tokenId, int24 tickLower, int24 tickUpper, bytes32 salt, bool active)",
   "function balances() view returns (uint256 bal0, uint256 bal1)",
+  "function setActiveRegime(uint8 regime) external",
+  "function rebalance(address targetA, bytes calldata callA, address targetB, bytes calldata callB) external",
+  "function owner() view returns (address)",
+  "function keeper() view returns (address)",
 ];
 
 const HookABI = [
@@ -280,7 +284,7 @@ function Card({ title, children, accent }: { title: string; children: React.Reac
   );
 }
 
-function DataRow({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
+function DataRow({ label, value, highlight }: { label: string; value: React.ReactNode; highlight?: boolean }) {
   return (
     <div className="flex items-center justify-between gap-4">
       <span className="text-sm text-gray-500">{label}</span>
@@ -500,9 +504,20 @@ export default function Page() {
   const [token0Address, setToken0Address] = useState<string | null>(null);
   const [token1Address, setToken1Address] = useState<string | null>(null);
 
+  // Rebalance state
+  const [rebalanceLoading, setRebalanceLoading] = useState(false);
+  const [rebalanceTxHash, setRebalanceTxHash] = useState<string | null>(null);
+
   // Pool state from StateView
   const [currentTick, setCurrentTick] = useState(0);
   const [sqrtPriceX96, setSqrtPriceX96] = useState<string>("79228162514264337593543950336"); // Default tick 0
+
+  // Range configs from vault
+  const [rangeConfigs, setRangeConfigs] = useState<{
+    normal: { tickLower: number; tickUpper: number; enabled: boolean };
+    mild: { tickLower: number; tickUpper: number; enabled: boolean };
+    severe: { tickLower: number; tickUpper: number; enabled: boolean };
+  } | null>(null);
 
   // Derived values
   const { regime: regimeName, status: regimeStatus } = useMemo(() => regimeFromNumber(regime), [regime]);
@@ -510,6 +525,59 @@ export default function Page() {
   // Calculate current price and deviation from tick
   const currentPrice = useMemo(() => tickToPrice(currentTick), [currentTick]);
   const deviationBps = useMemo(() => Math.round((currentPrice - 1.0) * 10000), [currentPrice]);
+
+  // Check if LP is out of range
+  const isOutOfRange = useMemo(() => {
+    if (!position) return false;
+    return currentTick < position.tickLower || currentTick > position.tickUpper;
+  }, [currentTick, position]);
+
+  // Determine target regime based on current tick
+  const targetRegime = useMemo(() => {
+    if (!rangeConfigs) return 0;
+    
+    const { normal, mild } = rangeConfigs;
+    
+    // Check from Normal outward
+    // Is tick within Normal range?
+    if (currentTick >= normal.tickLower && currentTick <= normal.tickUpper) {
+      return 0; // Normal
+    }
+    
+    // Below peg: tick < normal.tickLower (-240)
+    if (currentTick < normal.tickLower) {
+      // Is it still above mild.tickLower (-540)?
+      if (currentTick >= mild.tickLower) {
+        return 1; // Mild
+      }
+      // Below mild.tickLower (-540) = Severe
+      return 2; // Severe
+    }
+    
+    // Above peg: tick > normal.tickUpper (240)
+    if (currentTick > normal.tickUpper) {
+      // Mirror logic for above peg
+      if (currentTick <= -mild.tickLower) { // Assuming symmetric: 540
+        return 1; // Mild
+      }
+      return 2; // Severe
+    }
+    
+    return 0; // Normal (fallback)
+  }, [currentTick, rangeConfigs]);
+
+  // Get target range for display
+  const targetRange = useMemo(() => {
+    if (!rangeConfigs) return null;
+    if (targetRegime === 0) return rangeConfigs.normal;
+    if (targetRegime === 1) return rangeConfigs.mild;
+    return rangeConfigs.severe;
+  }, [targetRegime, rangeConfigs]);
+
+  // Check if rebalancing is needed
+  const needsRebalance = useMemo(() => {
+    return targetRegime !== regime || isOutOfRange;
+  }, [targetRegime, regime, isOutOfRange]);
 
   // Load data
   const loadData = useCallback(async () => {
@@ -537,15 +605,25 @@ export default function Page() {
       if (!isZeroAddress(ADDR.vault)) {
         const vault = new Contract(ADDR.vault, VaultABI, provider);
 
-        const [regimeVal, normalPos, supportPos, bals] = await Promise.all([
+        const [regimeVal, normalPos, supportPos, bals, normalRng, mildRng, severeRng] = await Promise.all([
           vault.activeRegime(),
           vault.normalPosition(),
           vault.supportPosition(),
           vault.balances(),
+          vault.normalRange(),
+          vault.mildRange(),
+          vault.severeRange(),
         ]);
 
         setRegime(Number(regimeVal));
         setBalances({ bal0: bals.bal0, bal1: bals.bal1 });
+        
+        // Store range configs
+        setRangeConfigs({
+          normal: { tickLower: Number(normalRng[0]), tickUpper: Number(normalRng[1]), enabled: normalRng[2] },
+          mild: { tickLower: Number(mildRng[0]), tickUpper: Number(mildRng[1]), enabled: mildRng[2] },
+          severe: { tickLower: Number(severeRng[0]), tickUpper: Number(severeRng[1]), enabled: severeRng[2] },
+        });
 
         // Determine active position tokenId
         let activeTokenId: string | null = null;
@@ -884,6 +962,59 @@ export default function Page() {
     }
   };
 
+  // Execute rebalance - simplified version that just updates the regime
+  // A full implementation would call vault.rebalance() with proper calldata
+  const executeRebalance = async () => {
+    if (!walletConnected) {
+      alert("Please connect wallet first");
+      return;
+    }
+
+    if (!needsRebalance) {
+      alert("No rebalance needed - position is optimal");
+      return;
+    }
+
+    setRebalanceLoading(true);
+    setRebalanceTxHash(null);
+
+    try {
+      const { BrowserProvider, Contract: EthersContract } = await import("ethers");
+      const provider = new BrowserProvider((window as any).ethereum);
+      const signer = await provider.getSigner();
+
+      const vault = new EthersContract(ADDR.vault, VaultABI, signer);
+
+      console.log("Rebalancing...", {
+        currentTick,
+        deviationBps,
+        currentRegime: regime,
+        targetRegime,
+        targetRange,
+      });
+
+      // Update the active regime to target
+      if (targetRegime !== regime) {
+        const tx = await vault.setActiveRegime(targetRegime, { gasLimit: 100000 });
+        console.log("Regime update tx:", tx.hash);
+        setRebalanceTxHash(tx.hash);
+        
+        await tx.wait();
+        console.log("Regime updated to:", targetRegime);
+      } else {
+        alert("Regime is already at target. Run keeper script to move liquidity.");
+      }
+
+      // Reload data
+      loadData();
+    } catch (e: any) {
+      console.error("Rebalance error:", e);
+      alert(`Rebalance failed: ${e?.message || e}`);
+    } finally {
+      setRebalanceLoading(false);
+    }
+  };
+
   return (
     <main className="min-h-screen bg-gray-50 text-gray-900">
       {/* Background gradient */}
@@ -924,6 +1055,18 @@ export default function Page() {
             <div className="pt-4 border-t border-gray-100 mt-4">
               <DataRow label="Current Tick" value={currentTick.toString()} />
               <DataRow label="Deviation" value={formatBps(deviationBps)} highlight />
+              <DataRow 
+                label="Active Regime (Contract)" 
+                value={
+                  <span className={`font-medium ${
+                    regime === 0 ? "text-emerald-600" : 
+                    regime === 1 ? "text-amber-600" : 
+                    regime === 2 ? "text-red-600" : "text-gray-600"
+                  }`}>
+                    {regimeName} ({regime})
+                  </span>
+                } 
+              />
             </div>
           </Card>
 
@@ -1199,6 +1342,187 @@ export default function Page() {
                   )}
                 </>
               )}
+            </div>
+          </Card>
+        </div>
+
+        {/* Rebalance Card */}
+        <div className="mt-6">
+          <Card 
+            title="Layer 2: Rebalance Control" 
+            accent={needsRebalance ? "text-red-600" : "text-purple-600"}
+          >
+            <div className="space-y-4">
+              {/* Status Banner */}
+              <div className={`p-4 rounded-lg border ${
+                needsRebalance 
+                  ? "bg-red-50 border-red-200" 
+                  : "bg-emerald-50 border-emerald-200"
+              }`}>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className={`text-sm font-medium ${
+                      needsRebalance ? "text-red-700" : "text-emerald-700"
+                    }`}>
+                      {needsRebalance 
+                        ? "⚠️ Rebalance Needed" 
+                        : "✓ Position Optimally Placed"}
+                    </div>
+                    <div className="text-xs text-gray-500 mt-1">
+                      Current Tick: {currentTick} | Position Range: {position?.tickLower ?? "—"} to {position?.tickUpper ?? "—"}
+                    </div>
+                  </div>
+                  <div className={`text-2xl font-mono ${
+                    Math.abs(deviationBps) > 100 ? "text-red-600" : 
+                    Math.abs(deviationBps) > 50 ? "text-amber-600" : "text-emerald-600"
+                  }`}>
+                    {deviationBps >= 0 ? "+" : ""}{(deviationBps / 100).toFixed(2)}%
+                  </div>
+                </div>
+              </div>
+
+              {/* Current vs Target Regime */}
+              <div className="grid grid-cols-2 gap-4">
+                {/* Current State */}
+                <div className="p-4 rounded-lg border border-gray-200 bg-gray-50">
+                  <div className="text-xs text-gray-500 uppercase tracking-wide mb-2">Current State</div>
+                  <div className={`text-lg font-semibold ${
+                    regime === 0 ? "text-emerald-600" : 
+                    regime === 1 ? "text-amber-600" : "text-red-600"
+                  }`}>
+                    {regimeName} Regime
+                  </div>
+                  {position && (
+                    <div className="text-xs text-gray-500 mt-1">
+                      Range: {position.tickLower} → {position.tickUpper}
+                      <br />
+                      Price: ${tickToPrice(position.tickLower).toFixed(4)} – ${tickToPrice(position.tickUpper).toFixed(4)}
+                    </div>
+                  )}
+                </div>
+
+                {/* Target State */}
+                <div className={`p-4 rounded-lg border ${
+                  needsRebalance 
+                    ? "border-amber-300 bg-amber-50" 
+                    : "border-emerald-200 bg-emerald-50"
+                }`}>
+                  <div className="text-xs text-gray-500 uppercase tracking-wide mb-2">
+                    {needsRebalance ? "Should Move To" : "Target (Current)"}
+                  </div>
+                  <div className={`text-lg font-semibold ${
+                    targetRegime === 0 ? "text-emerald-600" : 
+                    targetRegime === 1 ? "text-amber-600" : "text-red-600"
+                  }`}>
+                    {targetRegime === 0 ? "Normal" : targetRegime === 1 ? "Mild" : "Severe"} Regime
+                  </div>
+                  {targetRange && (
+                    <div className="text-xs text-gray-500 mt-1">
+                      Range: {targetRange.tickLower} → {targetRange.tickUpper}
+                      <br />
+                      Price: ${tickToPrice(targetRange.tickLower).toFixed(4)} – ${tickToPrice(targetRange.tickUpper).toFixed(4)}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Range Configs from Contract */}
+              {rangeConfigs && (
+                <div className="p-3 rounded-lg border border-gray-200 bg-gray-50">
+                  <div className="text-xs text-gray-500 uppercase tracking-wide mb-2">Configured Ranges (from Vault)</div>
+                  <div className="grid grid-cols-3 gap-2 text-xs">
+                    <div className={`p-2 rounded ${regime === 0 ? "bg-emerald-100" : "bg-white"} border`}>
+                      <div className="font-medium text-emerald-700">Normal</div>
+                      <div className="text-gray-500">
+                        {rangeConfigs.normal.tickLower} → {rangeConfigs.normal.tickUpper}
+                      </div>
+                      <div className="text-gray-400">
+                        ${tickToPrice(rangeConfigs.normal.tickLower).toFixed(4)} – ${tickToPrice(rangeConfigs.normal.tickUpper).toFixed(4)}
+                      </div>
+                    </div>
+                    <div className={`p-2 rounded ${regime === 1 ? "bg-amber-100" : "bg-white"} border`}>
+                      <div className="font-medium text-amber-700">Mild</div>
+                      <div className="text-gray-500">
+                        {rangeConfigs.mild.tickLower} → {rangeConfigs.mild.tickUpper}
+                      </div>
+                      <div className="text-gray-400">
+                        ${tickToPrice(rangeConfigs.mild.tickLower).toFixed(4)} – ${tickToPrice(rangeConfigs.mild.tickUpper).toFixed(4)}
+                      </div>
+                    </div>
+                    <div className={`p-2 rounded ${regime === 2 ? "bg-red-100" : "bg-white"} border`}>
+                      <div className="font-medium text-red-700">Severe</div>
+                      <div className="text-gray-500">
+                        {rangeConfigs.severe.tickLower} → {rangeConfigs.severe.tickUpper}
+                      </div>
+                      <div className="text-gray-400">
+                        ${tickToPrice(rangeConfigs.severe.tickLower).toFixed(4)} – ${tickToPrice(rangeConfigs.severe.tickUpper).toFixed(4)}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Rebalance Action */}
+              {needsRebalance && (
+                <div className="p-3 rounded-lg border border-amber-200 bg-amber-50">
+                  <div className="text-sm font-medium text-amber-800 mb-1">📋 Rebalance Action Required</div>
+                  <div className="text-xs text-amber-700">
+                    {regime !== targetRegime && (
+                      <div>• Change regime: {regimeName} → {targetRegime === 0 ? "Normal" : targetRegime === 1 ? "Mild" : "Severe"}</div>
+                    )}
+                    {isOutOfRange && targetRange && (
+                      <div>• Move liquidity to: {targetRange.tickLower} → {targetRange.tickUpper}</div>
+                    )}
+                    <div className="mt-2 text-amber-600">
+                      Run keeper script: <code className="bg-amber-100 px-1 rounded text-xs">forge script script/06_AdjustLiquidity.s.sol</code>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Rebalance Button */}
+              {walletConnected ? (
+                <button
+                  onClick={executeRebalance}
+                  disabled={rebalanceLoading || !needsRebalance}
+                  className={`w-full py-3 px-4 rounded-lg font-medium transition-colors ${
+                    rebalanceLoading || !needsRebalance
+                      ? "bg-gray-200 text-gray-400 cursor-not-allowed"
+                      : "bg-red-600 text-white hover:bg-red-700"
+                  }`}
+                >
+                  {rebalanceLoading 
+                    ? "Updating..." 
+                    : needsRebalance 
+                      ? `🔄 Update Regime to ${targetRegime === 0 ? "Normal" : targetRegime === 1 ? "Mild" : "Severe"}` 
+                      : "✓ No Rebalance Needed"}
+                </button>
+              ) : (
+                <button
+                  onClick={connectWallet}
+                  className="w-full py-3 px-4 bg-purple-600 text-white rounded-lg font-medium hover:bg-purple-700 transition-colors"
+                >
+                  Connect Wallet to Rebalance
+                </button>
+              )}
+
+              {/* Tx Hash */}
+              {rebalanceTxHash && (
+                <div className="text-sm text-center">
+                  <a
+                    href={`https://sepolia.arbiscan.io/tx/${rebalanceTxHash}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-purple-600 hover:underline"
+                  >
+                    View on Arbiscan →
+                  </a>
+                </div>
+              )}
+
+              <div className="text-xs text-gray-400 pt-2 border-t border-gray-100">
+                Regime updates are done via UI. Full liquidity repositioning requires the keeper script.
+              </div>
             </div>
           </Card>
         </div>

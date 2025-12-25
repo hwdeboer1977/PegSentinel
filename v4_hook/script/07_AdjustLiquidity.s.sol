@@ -6,7 +6,7 @@ import "forge-std/console2.sol";
 
 // 1) set -a; source .env.anvil; set +a
 // Change regime? export TARGET_REGIME=1
-// 2) forge script script/06_AdjustLiquidity.s.sol:AdjustLiquidityScript --rpc-url $RPC_URL --broadcast -vv --via-ir
+// 2) forge script script/07_AdjustLiquidity.s.sol:AdjustLiquidityScript --rpc-url $RPC_URL --broadcast -vv --via-ir
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
