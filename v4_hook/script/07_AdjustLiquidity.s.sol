@@ -28,6 +28,7 @@ interface IPermit2 {
     function approve(address token, address spender, uint160 amount, uint48 expiration) external;
 }
 
+
 /// @notice Adjust liquidity for PegSentinelVault:
 /// - Reads current active regime from vault.activeRegime()
 /// - Auto-selects target regime based on currentTick, OR override with env TARGET_REGIME
@@ -98,20 +99,20 @@ contract AdjustLiquidityScript is Script, BaseScript, LiquidityHelpers {
         console2.log("forceMint    :", forceMint);
 
         // ---------- get CURRENT active position (where liquidity currently is) ----------
-        (uint256 tokenIdOld, int24 oldTickLower, int24 oldTickUpper, bytes32 saltOld, bool oldActive) =
-            _getPositionForRegime(vault, currentRegime);
+        (
+            uint256 tokenIdOld,
+            int24 oldTickLower,
+            int24 oldTickUpper,
+            bytes32 saltOld,
+            ,  // liquidity (we'll query fresh from position manager)
+            bool oldActive
+        ) = _getPositionForRegime(vault, currentRegime);
 
         require(oldActive, "old position not active");
         require(tokenIdOld != 0, "old tokenId=0");
 
-        // ---------- read old liquidity from PoolManager ----------
-        (uint128 liqOld,,) = poolManager.getPositionInfo(
-            pid,
-            address(positionManager),
-            oldTickLower,
-            oldTickUpper,
-            saltOld
-        );
+        // ---------- read old liquidity from PositionManager ----------
+        uint128 liqOld = positionManager.getPositionLiquidity(tokenIdOld);
 
         console2.log("tokenIdOld:", tokenIdOld);
         console2.log("oldTickLower:", int256(oldTickLower));
@@ -127,7 +128,6 @@ contract AdjustLiquidityScript is Script, BaseScript, LiquidityHelpers {
         require(newTickLower < newTickUpper, "bad target ticks");
 
         // Optional safety: ensure target ticks align to script tickSpacing
-        // (your vault also validates multiples if pool.tickSpacing is set)
         require(newTickLower % tickSpacing == 0 && newTickUpper % tickSpacing == 0, "target ticks not aligned");
 
         console2.log("newTickLower:", int256(newTickLower));
@@ -184,9 +184,14 @@ contract AdjustLiquidityScript is Script, BaseScript, LiquidityHelpers {
         require(bal0 > 0 || bal1 > 0, "No funds in vault after decrease");
 
         // ---------- 2) add liquidity into TARGET position ----------
-        // Normal => normalPosition, Mild/Severe => supportPosition
-        (uint256 tokenIdTarget, int24 tLo, int24 tHi, bytes32 tSalt, bool tActive) =
-            _getPositionForRegime(vault, targetRegime);
+        (
+            uint256 tokenIdTarget,
+            int24 tLo,
+            int24 tHi,
+            ,  // salt
+            ,  // liquidity
+            bool tActive
+        ) = _getPositionForRegime(vault, targetRegime);
 
         bool canIncreaseExisting =
             (!forceMint) &&
@@ -207,8 +212,6 @@ contract AdjustLiquidityScript is Script, BaseScript, LiquidityHelpers {
 
             console2.log("Increasing existing target tokenId:", tokenIdTarget);
             console2.log("liqAdd:", uint256(liqAdd));
-            console2.log("targetSalt:");
-            console2.logBytes32(tSalt);
 
             (bytes memory incActions, bytes[] memory incParams) =
                 _increaseLiquidityParams(
@@ -287,7 +290,6 @@ contract AdjustLiquidityScript is Script, BaseScript, LiquidityHelpers {
     // ------------------------------------------------------------
 
     function _ensurePermit2Approvals(PegSentinelVault vault, address t0, address t1) internal {
-        // token.approve(permit2, max) + permit2.approve(token, positionManager, max160, max48)
         if (t0 != address(0)) {
             vault.execute(
                 t0,
@@ -328,7 +330,7 @@ contract AdjustLiquidityScript is Script, BaseScript, LiquidityHelpers {
     }
 
     // ------------------------------------------------------------
-    // Regime / range / position helpers (tuple-based)
+    // Regime / range / position helpers
     // ------------------------------------------------------------
 
     function _getRangeForRegime(PegSentinelVault vault, PegSentinelVault.Regime r)
@@ -341,14 +343,15 @@ contract AdjustLiquidityScript is Script, BaseScript, LiquidityHelpers {
         return vault.severeRange();
     }
 
+    /// @dev Returns position metadata - updated for new struct with 6 fields
     function _getPositionForRegime(PegSentinelVault vault, PegSentinelVault.Regime r)
         internal
         view
-        returns (uint256 tokenId, int24 lo, int24 hi, bytes32 salt, bool active)
+        returns (uint256 tokenId, int24 lo, int24 hi, bytes32 salt, uint128 liquidity, bool active)
     {
-        // Normal => normalPosition
-        // Mild/Severe => supportPosition (shared)
-        if (r == PegSentinelVault.Regime.Normal) return vault.normalPosition();
+        if (r == PegSentinelVault.Regime.Normal) {
+            return vault.normalPosition();
+        }
         return vault.supportPosition();
     }
 
@@ -357,16 +360,12 @@ contract AdjustLiquidityScript is Script, BaseScript, LiquidityHelpers {
         view
         returns (PegSentinelVault.Regime)
     {
-        // If TARGET_REGIME not set, envOr returns 999 and we keep autoRegime.
         uint256 raw = vm.envOr("TARGET_REGIME", uint256(999));
         if (raw <= 2) return PegSentinelVault.Regime(raw);
         return autoRegime;
     }
 
-    /// @dev Simple auto-selection based on your configured tick bands.
-    /// Uses:
-    /// - normalRange.tickLower as first “below peg” trigger
-    /// - severeRange.tickUpper as deeper trigger
+    /// @dev Simple auto-selection based on configured tick bands
     function _determineTargetRegime(PegSentinelVault vault, int24 currentTick)
         internal
         view

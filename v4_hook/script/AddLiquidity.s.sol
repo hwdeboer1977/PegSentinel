@@ -50,8 +50,15 @@ contract AddLiquidityScript is Script, BaseScript, LiquidityHelpers {
 
         PegSentinelVault vault = PegSentinelVault(payable(vaultAddr));
 
-        // --- Get existing position from vault ---
-        (uint256 tokenId, int24 tickLower, int24 tickUpper,, bool active) = vault.normalPosition();
+        // --- Get existing position from vault (6 fields now) ---
+        (
+            uint256 tokenId,
+            int24 tickLower,
+            int24 tickUpper,
+            ,  // salt
+            ,  // liquidity
+            bool active
+        ) = vault.normalPosition();
         
         require(active, "Normal position not active");
         require(tokenId != 0, "No existing position");

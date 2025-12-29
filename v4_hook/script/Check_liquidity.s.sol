@@ -34,7 +34,7 @@ contract CheckLiquidityScript is BaseScript {
 
     function run() external view {
         // ---- HARD CODE ----
-        uint256 tokenId = 185;
+        uint256 tokenId = vm.envUint("TOKEN_ID");
         int24 tickLower = -240;
         int24 tickUpper =  240;
         bytes32 salt = bytes32(tokenId);
@@ -57,16 +57,22 @@ contract CheckLiquidityScript is BaseScript {
         PoolId pid = poolKey.toId();
 
         console2.log("=== CheckLiquidity (PoolManager PositionInfo) ===");
+        console2.log("currency0:", Currency.unwrap(currency0));
+        console2.log("currency1:", Currency.unwrap(currency1));
+        console2.log("tickSpacing:", tickSpacing);
+        console2.log("Hook:", address(hookContract));
+        console2.log("PoolId:");
+        console2.logBytes32(PoolId.unwrap(pid));
+
+
         console2.log("tokenId:", tokenId);
         console2.log("salt:");
         console2.logBytes32(salt);
 
         console2.log("PositionManager (owner in PM):", address(positionManager));
         console2.log("PoolManager:", address(poolManager));
-        console2.log("Hook:", address(hookContract));
-        console2.log("PoolId:");
-        console2.logBytes32(PoolId.unwrap(pid));
-
+       
+       
         // pool state
         (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(pid);
         int24 currentTick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
@@ -90,6 +96,14 @@ contract CheckLiquidityScript is BaseScript {
 
         bool inRange = (currentTick >= tickLower) && (currentTick < tickUpper);
         console2.log("inRange:", inRange);
+
+        uint128 liq189 = positionManager.getPositionLiquidity(189);
+        uint128 liq190 = positionManager.getPositionLiquidity(190);
+        uint128 liq191 = positionManager.getPositionLiquidity(191);
+
+        console2.log("Position 189 liquidity:", liq189);
+        console2.log("Position 190 liquidity:", liq190);
+        console2.log("Position 191 liquidity:", liq191);
 
         // Convert liquidity -> principal amounts at current price
         if (liquidity > 0) {
