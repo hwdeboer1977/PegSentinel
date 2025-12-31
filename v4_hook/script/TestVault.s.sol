@@ -27,8 +27,7 @@ import {PegSentinelVault} from "../src/PegSentinelVault.sol";
 // 2b. forge script script/TestVault.s.sol:TestAutoRebalanceScript --rpc-url $ARB_RPC --broadcast -vvvv --via-ir
 
 // 3. TestForceRebalanceScript - Force regime change
-// 3a. TARGET_REGIME=1 forge script script/TestVault.s.sol:TestForceRebalanceScript --rpc-url $ARB_RPC --broadcast -vvvv --via-ir
-// 3b. ARGET_REGIME=2 forge script script/TestVault.s.sol:TestForceRebalanceScript --rpc-url $ARB_RPC --broadcast -vvvv --via-ir
+// 3a. forge script script/TestVault.s.sol:TestForceRebalanceScript --rpc-url $ARB_RPC --broadcast -vvvv --via-ir
 
 /// @title TestVaultScript
 /// @notice Tests all core vault functions: config, regimes, thresholds, and needsRebalance
@@ -268,7 +267,7 @@ contract TestForceRebalanceScript is Script, BaseScript {
     function run() external {
         uint256 pk = uint256(vm.envBytes32("PRIVATE_KEY"));
         address vaultAddr = vm.envAddress("VAULT_ADDRESS");
-        uint256 targetRegimeRaw = vm.envOr("TARGET_REGIME", uint256(1)); // Default to Mild
+        uint256 targetRegimeRaw = vm.envOr("TARGET_REGIME", uint256(2)); // Default to Mild
 
         PegSentinelVault vault = PegSentinelVault(payable(vaultAddr));
         PegSentinelVault.Regime targetRegime = PegSentinelVault.Regime(targetRegimeRaw);

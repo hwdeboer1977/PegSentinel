@@ -3,7 +3,7 @@ pragma solidity ^0.8.26;
 
 // Run on Sepolia Arbitrum:
 // 1. set -a; source .env; set +a
-// 2. forge script script/00_DeployMockTokens.s.sol:DeployMockTokens --rpc-url $ARB_RPC --broadcast -vvvv -via-ir
+// 2. forge script script/00_DeployMockTokens.s.sol:DeployMockTokens --rpc-url $ARB_RPC --broadcast -vvvv --via-ir
 
 // Run on anvil:
 // 1. anvil --fork-url <RPC LINK>

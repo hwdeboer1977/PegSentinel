@@ -24,6 +24,11 @@ import {BaseScript} from "./base/BaseScript.sol";
 import {LiquidityHelpers} from "./base/LiquidityHelpers.sol";
 import {PegSentinelVault} from "../src/PegSentinelVault.sol";
 
+// Sepolia:
+// 1. set -a; source .env; set +a
+// 2. forge script script/AddLiquidity.s.sol --rpc-url $ARB_RPC --broadcast -vvvv --via-ir
+
+
 interface IPermit2 {
     function approve(address token, address spender, uint160 amount, uint48 expiration) external;
 }

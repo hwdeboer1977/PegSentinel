@@ -97,13 +97,6 @@ contract CheckLiquidityScript is BaseScript {
         bool inRange = (currentTick >= tickLower) && (currentTick < tickUpper);
         console2.log("inRange:", inRange);
 
-        uint128 liq189 = positionManager.getPositionLiquidity(189);
-        uint128 liq190 = positionManager.getPositionLiquidity(190);
-        uint128 liq191 = positionManager.getPositionLiquidity(191);
-
-        console2.log("Position 189 liquidity:", liq189);
-        console2.log("Position 190 liquidity:", liq190);
-        console2.log("Position 191 liquidity:", liq191);
 
         // Convert liquidity -> principal amounts at current price
         if (liquidity > 0) {
