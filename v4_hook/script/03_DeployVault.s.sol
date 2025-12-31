@@ -34,7 +34,7 @@ contract DeployVault is Script {
         vault = new PegSentinelVault(token0, token1, owner);
 
         // ------------------------------------------------------------
-        // Initialize regime ranges (tickSpacing=60 assumed)
+        // Initialize regime RANGES (where liquidity goes)
         // Normal:  [-240, +240]
         // Mild:    [-540, 0]
         // Severe:  [-1620, -300]
@@ -43,29 +43,45 @@ contract DeployVault is Script {
         vault.setRange(PegSentinelVault.Regime.Mild,   int24(-540), int24(0),   true);
         vault.setRange(PegSentinelVault.Regime.Severe, int24(-1620), int24(-300), true);
 
-        // Optional: set initial regime explicitly
+        // ------------------------------------------------------------
+        // Initialize regime THRESHOLDS (when to switch regimes)
+        // tick > -240       → Normal
+        // tick <= -240      → Mild
+        // tick <= -540      → Severe
+        // ------------------------------------------------------------
+        vault.setThresholds(int24(-240), int24(-540));
+
+        // Set initial regime explicitly
         vault.setActiveRegime(PegSentinelVault.Regime.Normal);
 
         vm.stopBroadcast();
 
-        console2.log("PegSentinelVault deployed at:", address(vault));
+        console2.log("=== PegSentinelVault Deployed ===");
+        console2.log("Address:", address(vault));
         console2.log("token0:", token0);
         console2.log("token1:", token1);
-        console2.log("owner :", owner);
+        console2.log("owner:", owner);
+        console2.log("");
 
-        // Optional logs
+        // Log ranges
         (int24 nLo, int24 nHi, bool nEn) = vault.normalRange();
         (int24 mLo, int24 mHi, bool mEn) = vault.mildRange();
         (int24 sLo, int24 sHi, bool sEn) = vault.severeRange();
 
-        console2.log("Normal range:", nEn);
-        console2.log("Normal range lower bound:", int256(nLo));
-        console2.log("Normal range upper bound:", int256(nHi));
-        console2.log("Mild range:", mEn);
-        console2.log("Mild range lower bound:", int256(mLo));
-        console2.log("Mild range upper bound:", int256(mHi));
-        console2.log("Severe range:", sEn);
-        console2.log("Severe range lower bound:", int256(sLo));
-        console2.log("Severe range upper bound:", int256(sHi)); 
+        console2.log("=== Ranges ===");
+        console2.log("Normal: [", int256(nLo), ",", int256(nHi), "] enabled:", nEn);
+        console2.log("Mild:   [", int256(mLo), ",", int256(mHi), "] enabled:", mEn);
+        console2.log("Severe: [", int256(sLo), ",", int256(sHi), "] enabled:", sEn);
+        console2.log("");
+
+        // Log thresholds
+        console2.log("=== Thresholds ===");
+        console2.log("Mild threshold:", int256(vault.mildThreshold()));
+        console2.log("Severe threshold:", int256(vault.severeThreshold()));
+        console2.log("");
+        console2.log("Regime logic:");
+        console2.log("  tick > -240  -> Normal");
+        console2.log("  tick <= -240 -> Mild");
+        console2.log("  tick <= -540 -> Severe");
     }
 }
