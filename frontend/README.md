@@ -1,36 +1,105 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# PegSentinel Dashboard
+
+A Next.js frontend for monitoring and controlling the PegSentinel stablecoin peg defense system on Uniswap V4.
+
+![PegSentinel Dashboard](./screenshots/dashboard.png)
+
+## Features
+
+### Peg Status
+- Real-time price tracking relative to $1.00 peg
+- Current tick and deviation percentage
+- Active regime indicator (Normal/Mild/Severe)
+
+### Layer 1: Dynamic Fees
+- Live swap fee preview for both directions
+- Direction indicator (TOWARD PEG / AWAY FROM PEG)
+- Lower fees encourage swaps toward peg, higher fees discourage swaps away
+
+### Layer 2: Liquidity Management
+- Visual tick range representation
+- Active position details (Token ID, tick range)
+- In-range status indicator
+
+### Vault Reserves
+- Protocol-owned USDC/USDT balances
+- Ready to defend the peg
+
+### Current LP Overview
+- Position liquidity
+- Token amounts (USDC/USDT)
+- Price range in USD
+
+### Rebalance Control
+- Current vs target regime comparison
+- Configured ranges from vault (Normal, Mild, Severe)
+- Connect wallet to trigger rebalance
+
+---
 
 ## Getting Started
 
-First, run the development server:
-
 ```bash
+# Install dependencies
+npm install
+
+# Set environment variables
+cp .env.example .env.local
+
+# Run development server
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000)
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+---
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Environment Variables
 
-## Learn More
+```bash
+NEXT_PUBLIC_RPC_URL=https://sepolia-rollup.arbitrum.io/rpc
+NEXT_PUBLIC_VAULT_ADDRESS=0x...
+NEXT_PUBLIC_HOOK_ADDRESS=0x...
+NEXT_PUBLIC_POOL_MANAGER=0xFB3e0C6F74eB1a21CC1Da29aeC80D2Dfe6C9a317
+NEXT_PUBLIC_POSITION_MANAGER=0xAc631556d3d4019C95769033B5E719dD77124BAc
+```
 
-To learn more about Next.js, take a look at the following resources:
+---
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Tech Stack
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- **Next.js 14** - React framework
+- **TypeScript** - Type safety
+- **Tailwind CSS** - Styling
+- **viem** - Ethereum interactions
+- **wagmi** - Wallet connection
 
-## Deploy on Vercel
+---
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Architecture
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```
+Frontend (this repo)
+    │
+    ├── Reads from chain:
+    │   ├── Pool price/tick (PoolManager)
+    │   ├── Position data (PositionManager)
+    │   ├── Vault state (PegSentinelVault)
+    │   └── Fee preview (PegSentinelHook)
+    │
+    └── Writes to chain:
+        └── Rebalance trigger (PegSentinelVault)
+```
+
+---
+
+## Related
+
+- [v4_hook/](../v4_hook/) - Smart contracts and deployment scripts
+- [PegSentinel README](../v4_hook/README.md) - System architecture
+
+---
+
+## Status
+
+⚠️ **Hackathon Demo** - Not production ready
