@@ -11,14 +11,20 @@ import { ADDR, isZeroAddress } from "./lib/addresses";
 
 const VaultABI = [
   "function activeRegime() view returns (uint8)",
-  "function normalRange() view returns (int24 tickLower, int24 tickUpper, bool enabled)",
-  "function mildRange() view returns (int24 tickLower, int24 tickUpper, bool enabled)",
-  "function severeRange() view returns (int24 tickLower, int24 tickUpper, bool enabled)",
-  "function normalPosition() view returns (uint256 tokenId, int24 tickLower, int24 tickUpper, bytes32 salt, bool active)",
-  "function supportPosition() view returns (uint256 tokenId, int24 tickLower, int24 tickUpper, bytes32 salt, bool active)",
+  "function lpRange() view returns (int24 tickLower, int24 tickUpper)",
+  "function bufferRange() view returns (int24 tickLower, int24 tickUpper)",
+  "function lpPosition() view returns (uint256 tokenId, int24 tickLower, int24 tickUpper, bytes32 salt, uint128 liquidity, bool active)",
+  "function bufferPosition() view returns (uint256 tokenId, int24 tickLower, int24 tickUpper, bytes32 salt, uint128 liquidity, bool active)",
   "function balances() view returns (uint256 bal0, uint256 bal1)",
-  "function setActiveRegime(uint8 regime) external",
-  "function rebalance(address targetA, bytes calldata callA, address targetB, bytes calldata callB) external",
+  "function treasuryBalances() view returns (uint256 treasury0, uint256 treasury1)",
+  "function defendThreshold() view returns (int24)",
+  "function recoverThreshold() view returns (int24)",
+  "function needsRebalance() view returns (bool needed, uint8 currentRegime, uint8 targetRegime, int24 currentTick)",
+  "function getBufferLiquidity() view returns (uint128)",
+  "function totalFeesCollected0() view returns (uint256)",
+  "function totalFeesCollected1() view returns (uint256)",
+  "function autoRebalance() external",
+  "function collectFees() external",
   "function owner() view returns (address)",
   "function keeper() view returns (address)",
 ];
@@ -179,7 +185,7 @@ function getAmount1ForLiquidity(sqrtPriceAX96: bigint, sqrtPriceBX96: bigint, li
 // Types
 // ============================================================================
 
-type Regime = "Normal" | "Mild" | "Severe" | "Unknown";
+type Regime = "Normal" | "Defend" | "Unknown";
 type RegimeStatus = "ok" | "warn" | "bad" | "na";
 
 interface FeePreview {
@@ -224,8 +230,7 @@ interface LPPositionDetails {
 
 function regimeFromNumber(n: number): { regime: Regime; status: RegimeStatus } {
   if (n === 0) return { regime: "Normal", status: "ok" };
-  if (n === 1) return { regime: "Mild", status: "warn" };
-  if (n === 2) return { regime: "Severe", status: "bad" };
+  if (n === 1) return { regime: "Defend", status: "warn" };
   return { regime: "Unknown", status: "na" };
 }
 
@@ -390,8 +395,7 @@ function LiquidityRangeViz({
 
   const regimeColors = {
     Normal: "bg-emerald-200 border-emerald-400",
-    Mild: "bg-amber-200 border-amber-400",
-    Severe: "bg-red-200 border-red-400",
+    Defend: "bg-amber-200 border-amber-400",
     Unknown: "bg-gray-200 border-gray-400",
   };
 
@@ -514,10 +518,16 @@ export default function Page() {
 
   // Range configs from vault
   const [rangeConfigs, setRangeConfigs] = useState<{
-    normal: { tickLower: number; tickUpper: number; enabled: boolean };
-    mild: { tickLower: number; tickUpper: number; enabled: boolean };
-    severe: { tickLower: number; tickUpper: number; enabled: boolean };
+    lp: { tickLower: number; tickUpper: number };
+    buffer: { tickLower: number; tickUpper: number };
+    defendThreshold: number;
+    recoverThreshold: number;
   } | null>(null);
+
+  // Treasury / buffer state
+  const [bufferActive, setBufferActive] = useState(false);
+  const [bufferLiquidity, setBufferLiquidity] = useState<string>("0");
+  const [totalFees, setTotalFees] = useState<{ fees0: string; fees1: string }>({ fees0: "0", fees1: "0" });
 
   // Derived values
   const { regime: regimeName, status: regimeStatus } = useMemo(() => regimeFromNumber(regime), [regime]);
@@ -532,46 +542,29 @@ export default function Page() {
     return currentTick < position.tickLower || currentTick > position.tickUpper;
   }, [currentTick, position]);
 
-  // Determine target regime based on current tick
+  // Determine target regime based on current tick and thresholds
   const targetRegime = useMemo(() => {
     if (!rangeConfigs) return 0;
-    
-    const { normal, mild } = rangeConfigs;
-    
-    // Check from Normal outward
-    // Is tick within Normal range?
-    if (currentTick >= normal.tickLower && currentTick <= normal.tickUpper) {
-      return 0; // Normal
+
+    // V2: Use on-chain thresholds with hysteresis
+    // If currently Normal, only go to Defend if tick <= defendThreshold
+    // If currently Defend, only go to Normal if tick >= recoverThreshold
+    if (regime === 0) {
+      // Normal → Defend?
+      if (currentTick <= rangeConfigs.defendThreshold) return 1;
+      return 0;
+    } else {
+      // Defend → Normal?
+      if (currentTick >= rangeConfigs.recoverThreshold) return 0;
+      return 1;
     }
-    
-    // Below peg: tick < normal.tickLower (-240)
-    if (currentTick < normal.tickLower) {
-      // Is it still above mild.tickLower (-540)?
-      if (currentTick >= mild.tickLower) {
-        return 1; // Mild
-      }
-      // Below mild.tickLower (-540) = Severe
-      return 2; // Severe
-    }
-    
-    // Above peg: tick > normal.tickUpper (240)
-    if (currentTick > normal.tickUpper) {
-      // Mirror logic for above peg
-      if (currentTick <= -mild.tickLower) { // Assuming symmetric: 540
-        return 1; // Mild
-      }
-      return 2; // Severe
-    }
-    
-    return 0; // Normal (fallback)
-  }, [currentTick, rangeConfigs]);
+  }, [currentTick, rangeConfigs, regime]);
 
   // Get target range for display
   const targetRange = useMemo(() => {
     if (!rangeConfigs) return null;
-    if (targetRegime === 0) return rangeConfigs.normal;
-    if (targetRegime === 1) return rangeConfigs.mild;
-    return rangeConfigs.severe;
+    if (targetRegime === 0) return rangeConfigs.lp;
+    return rangeConfigs.buffer;
   }, [targetRegime, rangeConfigs]);
 
   // Check if rebalancing is needed
@@ -605,47 +598,46 @@ export default function Page() {
       if (!isZeroAddress(ADDR.vault)) {
         const vault = new Contract(ADDR.vault, VaultABI, provider);
 
-        const [regimeVal, normalPos, supportPos, bals, normalRng, mildRng, severeRng] = await Promise.all([
+        const [regimeVal, lpPos, bufPos, bals, lpRng, bufRng, defendTh, recoverTh, fees0, fees1] = await Promise.all([
           vault.activeRegime(),
-          vault.normalPosition(),
-          vault.supportPosition(),
+          vault.lpPosition(),
+          vault.bufferPosition(),
           vault.balances(),
-          vault.normalRange(),
-          vault.mildRange(),
-          vault.severeRange(),
+          vault.lpRange(),
+          vault.bufferRange(),
+          vault.defendThreshold(),
+          vault.recoverThreshold(),
+          vault.totalFeesCollected0(),
+          vault.totalFeesCollected1(),
         ]);
 
         setRegime(Number(regimeVal));
         setBalances({ bal0: bals.bal0, bal1: bals.bal1 });
-        
+        setTotalFees({ fees0: fees0.toString(), fees1: fees1.toString() });
+
         // Store range configs
         setRangeConfigs({
-          normal: { tickLower: Number(normalRng[0]), tickUpper: Number(normalRng[1]), enabled: normalRng[2] },
-          mild: { tickLower: Number(mildRng[0]), tickUpper: Number(mildRng[1]), enabled: mildRng[2] },
-          severe: { tickLower: Number(severeRng[0]), tickUpper: Number(severeRng[1]), enabled: severeRng[2] },
+          lp: { tickLower: Number(lpRng[0]), tickUpper: Number(lpRng[1]) },
+          buffer: { tickLower: Number(bufRng[0]), tickUpper: Number(bufRng[1]) },
+          defendThreshold: Number(defendTh),
+          recoverThreshold: Number(recoverTh),
         });
 
-        // Determine active position tokenId
+        // Buffer state
+        setBufferActive(bufPos[5]); // active field
+        setBufferLiquidity(bufPos[4].toString()); // liquidity field
+
+        // LP position is always the primary position in V2
         let activeTokenId: string | null = null;
-        
-        // Prefer support position if active, else normal
-        if (supportPos[4]) {
-          activeTokenId = supportPos[0].toString();
+
+        if (lpPos[5]) { // active field
+          activeTokenId = lpPos[0].toString();
           setPosition({
             tokenId: activeTokenId,
-            tickLower: Number(supportPos[1]),
-            tickUpper: Number(supportPos[2]),
+            tickLower: Number(lpPos[1]),
+            tickUpper: Number(lpPos[2]),
             active: true,
-            label: "Support",
-          });
-        } else if (normalPos[4]) {
-          activeTokenId = normalPos[0].toString();
-          setPosition({
-            tokenId: activeTokenId,
-            tickLower: Number(normalPos[1]),
-            tickUpper: Number(normalPos[2]),
-            active: true,
-            label: "Normal",
+            label: "LP",
           });
         } else {
           setPosition(null);
@@ -990,19 +982,18 @@ export default function Page() {
         deviationBps,
         currentRegime: regime,
         targetRegime,
-        targetRange,
       });
 
-      // Update the active regime to target
+      // V2: Call autoRebalance() — vault handles buffer deploy/remove
       if (targetRegime !== regime) {
-        const tx = await vault.setActiveRegime(targetRegime, { gasLimit: 100000 });
-        console.log("Regime update tx:", tx.hash);
+        const tx = await vault.autoRebalance({ gasLimit: 500000 });
+        console.log("autoRebalance tx:", tx.hash);
         setRebalanceTxHash(tx.hash);
         
         await tx.wait();
-        console.log("Regime updated to:", targetRegime);
+        console.log("Rebalance complete. Regime:", targetRegime === 0 ? "Normal" : "Defend");
       } else {
-        alert("Regime is already at target. Run keeper script to move liquidity.");
+        alert("No regime change needed.");
       }
 
       // Reload data
@@ -1060,8 +1051,7 @@ export default function Page() {
                 value={
                   <span className={`font-medium ${
                     regime === 0 ? "text-emerald-600" : 
-                    regime === 1 ? "text-amber-600" : 
-                    regime === 2 ? "text-red-600" : "text-gray-600"
+                    regime === 1 ? "text-amber-600" : "text-gray-600"
                   }`}>
                     {regimeName} ({regime})
                   </span>
@@ -1387,16 +1377,20 @@ export default function Page() {
                 <div className="p-4 rounded-lg border border-gray-200 bg-gray-50">
                   <div className="text-xs text-gray-500 uppercase tracking-wide mb-2">Current State</div>
                   <div className={`text-lg font-semibold ${
-                    regime === 0 ? "text-emerald-600" : 
-                    regime === 1 ? "text-amber-600" : "text-red-600"
+                    regime === 0 ? "text-emerald-600" : "text-amber-600"
                   }`}>
                     {regimeName} Regime
                   </div>
                   {position && (
                     <div className="text-xs text-gray-500 mt-1">
-                      Range: {position.tickLower} → {position.tickUpper}
+                      LP Range: {position.tickLower} → {position.tickUpper}
                       <br />
                       Price: ${tickToPrice(position.tickLower).toFixed(4)} – ${tickToPrice(position.tickUpper).toFixed(4)}
+                    </div>
+                  )}
+                  {bufferActive && (
+                    <div className="text-xs text-amber-600 mt-1">
+                      🛡️ Buffer active (L: {bufferLiquidity})
                     </div>
                   )}
                 </div>
@@ -1411,10 +1405,9 @@ export default function Page() {
                     {needsRebalance ? "Should Move To" : "Target (Current)"}
                   </div>
                   <div className={`text-lg font-semibold ${
-                    targetRegime === 0 ? "text-emerald-600" : 
-                    targetRegime === 1 ? "text-amber-600" : "text-red-600"
+                    targetRegime === 0 ? "text-emerald-600" : "text-amber-600"
                   }`}>
-                    {targetRegime === 0 ? "Normal" : targetRegime === 1 ? "Mild" : "Severe"} Regime
+                    {targetRegime === 0 ? "Normal" : "Defend"} Regime
                   </div>
                   {targetRange && (
                     <div className="text-xs text-gray-500 mt-1">
@@ -1430,34 +1423,28 @@ export default function Page() {
               {rangeConfigs && (
                 <div className="p-3 rounded-lg border border-gray-200 bg-gray-50">
                   <div className="text-xs text-gray-500 uppercase tracking-wide mb-2">Configured Ranges (from Vault)</div>
-                  <div className="grid grid-cols-3 gap-2 text-xs">
+                  <div className="grid grid-cols-2 gap-2 text-xs">
                     <div className={`p-2 rounded ${regime === 0 ? "bg-emerald-100" : "bg-white"} border`}>
-                      <div className="font-medium text-emerald-700">Normal</div>
+                      <div className="font-medium text-emerald-700">LP Range (never moves)</div>
                       <div className="text-gray-500">
-                        {rangeConfigs.normal.tickLower} → {rangeConfigs.normal.tickUpper}
+                        {rangeConfigs.lp.tickLower} → {rangeConfigs.lp.tickUpper}
                       </div>
                       <div className="text-gray-400">
-                        ${tickToPrice(rangeConfigs.normal.tickLower).toFixed(4)} – ${tickToPrice(rangeConfigs.normal.tickUpper).toFixed(4)}
+                        ${tickToPrice(rangeConfigs.lp.tickLower).toFixed(4)} – ${tickToPrice(rangeConfigs.lp.tickUpper).toFixed(4)}
                       </div>
                     </div>
-                    <div className={`p-2 rounded ${regime === 1 ? "bg-amber-100" : "bg-white"} border`}>
-                      <div className="font-medium text-amber-700">Mild</div>
+                    <div className={`p-2 rounded ${bufferActive ? "bg-amber-100" : "bg-white"} border`}>
+                      <div className="font-medium text-amber-700">Buffer Range (during depeg)</div>
                       <div className="text-gray-500">
-                        {rangeConfigs.mild.tickLower} → {rangeConfigs.mild.tickUpper}
+                        {rangeConfigs.buffer.tickLower} → {rangeConfigs.buffer.tickUpper}
                       </div>
                       <div className="text-gray-400">
-                        ${tickToPrice(rangeConfigs.mild.tickLower).toFixed(4)} – ${tickToPrice(rangeConfigs.mild.tickUpper).toFixed(4)}
+                        ${tickToPrice(rangeConfigs.buffer.tickLower).toFixed(4)} – ${tickToPrice(rangeConfigs.buffer.tickUpper).toFixed(4)}
                       </div>
                     </div>
-                    <div className={`p-2 rounded ${regime === 2 ? "bg-red-100" : "bg-white"} border`}>
-                      <div className="font-medium text-red-700">Severe</div>
-                      <div className="text-gray-500">
-                        {rangeConfigs.severe.tickLower} → {rangeConfigs.severe.tickUpper}
-                      </div>
-                      <div className="text-gray-400">
-                        ${tickToPrice(rangeConfigs.severe.tickLower).toFixed(4)} – ${tickToPrice(rangeConfigs.severe.tickUpper).toFixed(4)}
-                      </div>
-                    </div>
+                  </div>
+                  <div className="mt-2 text-xs text-gray-500">
+                    Thresholds: defend ≤ {rangeConfigs.defendThreshold} | recover ≥ {rangeConfigs.recoverThreshold} (hysteresis)
                   </div>
                 </div>
               )}
@@ -1468,13 +1455,10 @@ export default function Page() {
                   <div className="text-sm font-medium text-amber-800 mb-1">📋 Rebalance Action Required</div>
                   <div className="text-xs text-amber-700">
                     {regime !== targetRegime && (
-                      <div>• Change regime: {regimeName} → {targetRegime === 0 ? "Normal" : targetRegime === 1 ? "Mild" : "Severe"}</div>
-                    )}
-                    {isOutOfRange && targetRange && (
-                      <div>• Move liquidity to: {targetRange.tickLower} → {targetRange.tickUpper}</div>
+                      <div>• {targetRegime === 1 ? "Deploy buffer (treasury USDT → buy wall)" : "Remove buffer (recover to Normal)"}</div>
                     )}
                     <div className="mt-2 text-amber-600">
-                      Run keeper script: <code className="bg-amber-100 px-1 rounded text-xs">forge script script/06_AdjustLiquidity.s.sol</code>
+                      Keeper calls: <code className="bg-amber-100 px-1 rounded text-xs">vault.autoRebalance()</code>
                     </div>
                   </div>
                 </div>
@@ -1494,7 +1478,7 @@ export default function Page() {
                   {rebalanceLoading 
                     ? "Updating..." 
                     : needsRebalance 
-                      ? `🔄 Update Regime to ${targetRegime === 0 ? "Normal" : targetRegime === 1 ? "Mild" : "Severe"}` 
+                    ? `🔄 ${targetRegime === 1 ? "Deploy Buffer (Defend)" : "Remove Buffer (Normal)"}` 
                       : "✓ No Rebalance Needed"}
                 </button>
               ) : (
@@ -1543,7 +1527,7 @@ export default function Page() {
             <ActivityItem
               time="12:01"
               action="Regime changed"
-              detail="Normal → Mild (price deviation exceeded threshold)"
+              detail="Normal → Defend (tick crossed defend threshold)"
               type="regime"
             />
             <ActivityItem
