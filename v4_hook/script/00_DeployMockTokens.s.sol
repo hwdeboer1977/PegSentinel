@@ -6,11 +6,11 @@ pragma solidity ^0.8.26;
 // 2. forge script script/00_DeployMockTokens.s.sol:DeployMockTokens --rpc-url $ARB_RPC --broadcast -vvvv --via-ir
 
 // Run on anvil:
-// 1. anvil --fork-url <RPC LINK>
-// Use --dump-state state.json for dumping the state
+// 1. set -a; source .env; set +a
+// 2. anvil --fork-url $ARB_RPC --dump-state state.json
 
-// 2. set -a; source .env.anvil; set +a
-// 3. forge script script/00_DeployMockTokens.s.sol:DeployMockTokens --rpc-url http://127.0.0.1:8545 --broadcast -vvvv --via-ir
+// 3. set -a; source .env.anvil; set +a
+// 4. forge script script/00_DeployMockTokens.s.sol:DeployMockTokens --rpc-url http://127.0.0.1:8545 --broadcast -vvvv --via-ir
 // Store token addresses in .env.anvil
 // Update base/BaseScript.sol with addresses token0 and token1 
 import "forge-std/Script.sol";

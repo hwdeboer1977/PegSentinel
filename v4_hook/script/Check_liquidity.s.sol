@@ -35,8 +35,8 @@ contract CheckLiquidityScript is BaseScript {
     function run() external view {
         // ---- HARD CODE ----
         uint256 tokenId = vm.envUint("TOKEN_ID");
-        int24 tickLower = -240;
-        int24 tickUpper =  240;
+        int24 tickLower = -60;
+        int24 tickUpper =  60;
         bytes32 salt = bytes32(tokenId);
         // -------------------
 

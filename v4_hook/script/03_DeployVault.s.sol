@@ -6,7 +6,6 @@ import "forge-std/console2.sol";
 
 import {PegSentinelVault} from "../src/PegSentinelVault.sol";
 
-
 // Run on Sepolia Arbitrum:
 // 1. set -a; source .env; set +a
 // 2. forge script script/03_DeployVault.s.sol:DeployVault --rpc-url $ARB_RPC --broadcast -vv --via-ir
@@ -20,6 +19,12 @@ import {PegSentinelVault} from "../src/PegSentinelVault.sol";
 // - TOKEN0_ADDRESS
 // - TOKEN1_ADDRESS
 // - OWNER
+// - POOL_MANAGER        (Uniswap V4 PoolManager)
+// - POSITION_MANAGER    (Uniswap V4 PositionManager)
+// - PERMIT2             (Permit2 contract)
+// - HOOK_ADDRESS        (PegSentinelHook address)
+// - POOL_FEE            (e.g. 500 for 0.05%)
+// - TICK_SPACING        (e.g. 10)
 
 contract DeployVault is Script {
     function run() external returns (PegSentinelVault vault) {
@@ -29,59 +34,119 @@ contract DeployVault is Script {
         address token1 = vm.envAddress("TOKEN1_ADDRESS");
         address owner  = vm.envAddress("OWNER");
 
+        // Optional: read infra addresses from env (with defaults for local testing)
+        address poolManager     = vm.envOr("POOL_MANAGER", address(0));
+        address positionManager = vm.envOr("POSITION_MANAGER", address(0));
+        address permit2Addr     = vm.envOr("PERMIT2", address(0));
+        address hookAddress     = vm.envOr("HOOK_ADDRESS", address(0));
+        uint24  poolFee         = uint24(vm.envOr("POOL_FEE", uint256(500)));
+        int24   tickSpacing     = int24(int256(vm.envOr("TICK_SPACING", uint256(10))));
+
         vm.startBroadcast(pk);
 
         vault = new PegSentinelVault(token0, token1, owner);
 
         // ------------------------------------------------------------
-        // Initialize regime RANGES (where liquidity goes)
-        // Normal:  [-240, +240]
-        // Mild:    [-540, 0]
-        // Severe:  [-1620, -300]
+        // Set Uniswap V4 infrastructure (if addresses provided)
         // ------------------------------------------------------------
-        vault.setRange(PegSentinelVault.Regime.Normal, int24(-240), int24(240), true);
-        vault.setRange(PegSentinelVault.Regime.Mild,   int24(-540), int24(0),   true);
-        vault.setRange(PegSentinelVault.Regime.Severe, int24(-1620), int24(-300), true);
+        if (poolManager != address(0)) {
+            vault.setPoolManager(poolManager);
+        }
+        if (positionManager != address(0)) {
+            vault.setPositionManager(positionManager);
+        }
+        if (permit2Addr != address(0)) {
+            vault.setPermit2(permit2Addr);
+        }
+
+        // Allow positionManager and permit2 as execution targets
+        if (positionManager != address(0)) {
+            vault.setAllowedTarget(positionManager, true);
+        }
+        if (permit2Addr != address(0)) {
+            vault.setAllowedTarget(permit2Addr, true);
+        }
 
         // ------------------------------------------------------------
-        // Initialize regime THRESHOLDS (when to switch regimes)
-        // tick > -240       → Normal
-        // tick <= -240      → Mild
-        // tick <= -540      → Severe
+        // Set pool key (links vault to the correct Uniswap V4 pool)
         // ------------------------------------------------------------
-        vault.setThresholds(int24(-240), int24(-540));
+        if (hookAddress != address(0)) {
+            vault.setPoolKey(token0, token1, poolFee, tickSpacing, hookAddress);
+        }
 
-        // Set initial regime explicitly
-        vault.setActiveRegime(PegSentinelVault.Regime.Normal);
+        // ------------------------------------------------------------
+        // LP range: tight around peg [-60, +60]
+        // LP never moves — this is the core position range.
+        // ------------------------------------------------------------
+        vault.setLPRange(int24(-60), int24(60));
+
+        // ------------------------------------------------------------
+        // Buffer range: below LP [-240, -60]
+        // Treasury USDT deployed here during depeg defense.
+        // ------------------------------------------------------------
+        vault.setBufferRange(int24(-240), int24(-60));
+
+        // ------------------------------------------------------------
+        // Regime thresholds with hysteresis:
+        //   tick <= -50  → deploy buffer (Defend)
+        //   tick >= -30  → remove buffer (Normal)
+        // Gap between -50 and -30 prevents oscillation.
+        // ------------------------------------------------------------
+        vault.setThresholds(int24(-50), int24(-30));
+
+        // ------------------------------------------------------------
+        // Cooldown: 60 seconds between rebalances
+        // ------------------------------------------------------------
+        vault.setRebalanceCooldown(60);
 
         vm.stopBroadcast();
 
-        console2.log("=== PegSentinelVault Deployed ===");
+        // ============================================================
+        // Logging
+        // ============================================================
+        console2.log("=== PegSentinelVault V2 Deployed ===");
         console2.log("Address:", address(vault));
-        console2.log("token0:", token0);
-        console2.log("token1:", token1);
+        console2.log("token0 (USDC):", token0);
+        console2.log("token1 (USDT):", token1);
         console2.log("owner:", owner);
         console2.log("");
 
+        console2.log("=== Uniswap V4 Infrastructure ===");
+        console2.log("PoolManager:", poolManager);
+        console2.log("PositionManager:", positionManager);
+        console2.log("Permit2:", permit2Addr);
+        console2.log("Hook:", hookAddress);
+        console2.log("");
+
         // Log ranges
-        (int24 nLo, int24 nHi, bool nEn) = vault.normalRange();
-        (int24 mLo, int24 mHi, bool mEn) = vault.mildRange();
-        (int24 sLo, int24 sHi, bool sEn) = vault.severeRange();
+        (int24 lpLo, int24 lpHi) = vault.lpRange();
+        (int24 bufLo, int24 bufHi) = vault.bufferRange();
 
         console2.log("=== Ranges ===");
-        console2.log("Normal: [", int256(nLo), ",", int256(nHi), "] enabled:", nEn);
-        console2.log("Mild:   [", int256(mLo), ",", int256(mHi), "] enabled:", mEn);
-        console2.log("Severe: [", int256(sLo), ",", int256(sHi), "] enabled:", sEn);
+        console2.log("LP range (at peg, never moves):");
+        console2.log("  tickLower:", int256(lpLo));
+        console2.log("  tickUpper:", int256(lpHi));
+        console2.log("Buffer range (treasury USDT during depeg):");
+        console2.log("  tickLower:", int256(bufLo));
+        console2.log("  tickUpper:", int256(bufHi));
         console2.log("");
 
         // Log thresholds
-        console2.log("=== Thresholds ===");
-        console2.log("Mild threshold:", int256(vault.mildThreshold()));
-        console2.log("Severe threshold:", int256(vault.severeThreshold()));
+        console2.log("=== Thresholds (with hysteresis) ===");
+        console2.log("Defend threshold:", int256(vault.defendThreshold()));
+        console2.log("Recover threshold:", int256(vault.recoverThreshold()));
         console2.log("");
         console2.log("Regime logic:");
-        console2.log("  tick > -240  -> Normal");
-        console2.log("  tick <= -240 -> Mild");
-        console2.log("  tick <= -540 -> Severe");
+        console2.log("  tick <= -50  -> Defend (deploy buffer)");
+        console2.log("  tick >= -30  -> Normal (remove buffer)");
+        console2.log("  -50 < tick < -30 -> no change (hysteresis)");
+        console2.log("");
+
+        console2.log("=== Next Steps ===");
+        console2.log("1. Set keeper:       vault.setKeeper(keeperAddr)");
+        console2.log("2. Fund vault:       vault.fund(usdcAmt, usdtAmt)");
+        console2.log("3. Mint LP position: (via separate script)");
+        console2.log("4. Register LP:      vault.setLPPosition(tokenId, -60, 60, salt, true)");
+        console2.log("5. Keeper runs:      vault.collectFees() + vault.autoRebalance()");
     }
 }

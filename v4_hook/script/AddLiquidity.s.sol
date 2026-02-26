@@ -28,6 +28,10 @@ import {PegSentinelVault} from "../src/PegSentinelVault.sol";
 // 1. set -a; source .env; set +a
 // 2. forge script script/AddLiquidity.s.sol --rpc-url $ARB_RPC --broadcast -vvvv --via-ir
 
+// On Anvil
+// 1. set -a; source .env.anvil; set +a;
+// 2. forge script script/AddLiquidity.s.sol --rpc-url $RPC_URL --broadcast -vvvv --via-ir
+
 
 interface IPermit2 {
     function approve(address token, address spender, uint160 amount, uint48 expiration) external;
@@ -55,7 +59,7 @@ contract AddLiquidityScript is Script, BaseScript, LiquidityHelpers {
 
         PegSentinelVault vault = PegSentinelVault(payable(vaultAddr));
 
-        // --- Get existing position from vault (6 fields now) ---
+        // --- Get existing LP position from vault (6 fields) ---
         (
             uint256 tokenId,
             int24 tickLower,
@@ -63,9 +67,9 @@ contract AddLiquidityScript is Script, BaseScript, LiquidityHelpers {
             ,  // salt
             ,  // liquidity
             bool active
-        ) = vault.normalPosition();
+        ) = vault.lpPosition();
         
-        require(active, "Normal position not active");
+        require(active, "LP position not active");
         require(tokenId != 0, "No existing position");
 
         // --- Pool Key ---

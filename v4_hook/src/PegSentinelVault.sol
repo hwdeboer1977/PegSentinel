@@ -20,11 +20,20 @@ import {IHooks} from "v4-core/src/interfaces/IHooks.sol";
 import {Actions} from "v4-periphery/src/libraries/Actions.sol";
 import {IAllowanceTransfer} from "permit2/src/interfaces/IAllowanceTransfer.sol";
 
-
-
-/// @title PegSentinelVault (Hackathon Edition)
-/// @notice Protocol-owned vault with FULL on-chain rebalancing for stablecoin peg defense
-/// @dev Keeper only needs to call `autoRebalance()` - all logic is on-chain
+/// @title PegSentinelVault v2 — Treasury Buffer Model
+/// @notice Protocol-owned vault for stablecoin peg defense
+/// @dev Core LP stays at peg. Treasury from collected fees deploys as buffer during depeg.
+///
+/// Architecture:
+///   - lpPosition: LP at tight range around peg (e.g. [-60, +60]). NEVER moved.
+///   - bufferPosition: Single-sided USDT deployed below LP range during depeg. Funded by treasury.
+///   - Treasury: Accumulated fees (USDC + USDT) sitting in vault, not deployed as LP.
+///
+/// Defense playbook:
+///   1. EARN: LP earns fees at peg. Keeper calls collectFees() periodically → treasury grows.
+///   2. DEFEND: Depeg detected → deployBuffer() puts treasury USDT below LP range as sell wall.
+///   3. RECOVER: Peg restores → removeBuffer() pulls buffer back to treasury (now holding discounted USDC).
+///   4. PROFIT: Treasury is richer from buying USDC at discount + dynamic fee revenue.
 contract PegSentinelVault is Ownable, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
     using PoolIdLibrary for PoolKey;
@@ -34,17 +43,13 @@ contract PegSentinelVault is Ownable, Pausable, ReentrancyGuard {
                                 CONFIG
     //////////////////////////////////////////////////////////////*/
 
-    IERC20 public immutable token0;
-    IERC20 public immutable token1;
+    IERC20 public immutable token0; // USDC (sorted lower)
+    IERC20 public immutable token1; // USDT (sorted higher)
 
-    /// @notice Keeper that can call `autoRebalance()`
     address public keeper;
-
-    /// @notice Cooldown between rebalances (anti-thrash)
     uint256 public rebalanceCooldown;
     uint256 public lastRebalanceAt;
 
-    /// @notice Allowlist for execute() targets
     mapping(address => bool) public isAllowedTarget;
 
     /*//////////////////////////////////////////////////////////////
@@ -57,43 +62,37 @@ contract PegSentinelVault is Ownable, Pausable, ReentrancyGuard {
 
     PoolKey public poolKey;
 
-    event PoolKeyUpdated(
-        Currency currency0,
-        Currency currency1,
-        uint24 fee,
-        int24 tickSpacing,
-        address hooks
-    );
-
     /*//////////////////////////////////////////////////////////////
-                         REGIMES + RANGES (TICKS)
+                         REGIME DETECTION
     //////////////////////////////////////////////////////////////*/
 
     enum Regime {
-        Normal,
-        Mild,
-        Severe
+        Normal,  // At peg — only LP active
+        Defend   // Depeg detected — LP stays, buffer deployed
     }
+
+    Regime public activeRegime;
+
+    /// @notice Tick threshold: if current tick drops below this, deploy buffer
+    int24 public defendThreshold;
+
+    /// @notice Tick threshold for recovery: must rise above this to remove buffer (hysteresis)
+    int24 public recoverThreshold;
+
+    /*//////////////////////////////////////////////////////////////
+                         RANGE CONFIGURATION
+    //////////////////////////////////////////////////////////////*/
 
     struct RangeConfig {
         int24 tickLower;
         int24 tickUpper;
-        bool enabled;
     }
 
-    RangeConfig public normalRange;
-    RangeConfig public mildRange;
-    RangeConfig public severeRange;
+    /// @notice LP range — tight around peg, never changes
+    RangeConfig public lpRange;
 
-    Regime public activeRegime;
-
-    /// @notice Tick thresholds for automatic regime detection
-    int24 public mildThreshold;     // Below this = Mild regime
-    int24 public severeThreshold;   // Below this = Severe regime
-
-    event RangeUpdated(Regime indexed regime, int24 tickLower, int24 tickUpper, bool enabled);
-    event ActiveRegimeUpdated(Regime previous, Regime current);
-    event ThresholdsUpdated(int24 mildThreshold, int24 severeThreshold);
+    /// @notice Buffer range — below LP range, deployed during depeg
+    RangeConfig public bufferRange;
 
     /*//////////////////////////////////////////////////////////////
                          POSITION METADATA
@@ -108,8 +107,32 @@ contract PegSentinelVault is Ownable, Pausable, ReentrancyGuard {
         bool active;
     }
 
-    PositionMeta public normalPosition;
-    PositionMeta public supportPosition;
+    /// @notice The core LP position — stays at peg, never moved
+    PositionMeta public lpPosition;
+
+    /// @notice The buffer position — deployed/removed based on regime
+    PositionMeta public bufferPosition;
+
+    /// @notice Running total of fees collected into treasury
+    uint256 public totalFeesCollected0;
+    uint256 public totalFeesCollected1;
+
+    /*//////////////////////////////////////////////////////////////
+                                 EVENTS
+    //////////////////////////////////////////////////////////////*/
+
+    event KeeperUpdated(address indexed oldKeeper, address indexed newKeeper);
+    event AllowedTargetSet(address indexed target, bool allowed);
+    event Funded(address indexed from, uint256 amount0, uint256 amount1);
+    event TreasuryWithdrawn(address indexed to, uint256 amount0, uint256 amount1);
+    event Executed(address indexed target, uint256 value, bytes data);
+    event RebalanceCooldownUpdated(uint256 previous, uint256 current);
+    event PoolKeyUpdated(Currency currency0, Currency currency1, uint24 fee, int24 tickSpacing, address hooks);
+
+    event FeesCollected(uint256 amount0, uint256 amount1);
+    event BufferDeployed(int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 usdtDeployed);
+    event BufferRemoved(uint256 tokenId, uint128 liquidity);
+    event RegimeChanged(Regime indexed from, Regime indexed to, int24 currentTick);
 
     event PositionUpdated(
         bytes32 indexed label,
@@ -121,21 +144,6 @@ contract PegSentinelVault is Ownable, Pausable, ReentrancyGuard {
     );
 
     /*//////////////////////////////////////////////////////////////
-                                 EVENTS
-    //////////////////////////////////////////////////////////////*/
-
-    event KeeperUpdated(address indexed oldKeeper, address indexed newKeeper);
-    event AllowedTargetSet(address indexed target, bool allowed);
-    event Funded(address indexed from, uint256 amount0, uint256 amount1);
-    event TreasuryWithdrawn(address indexed to, uint256 amount0, uint256 amount1);
-    event Executed(address indexed target, uint256 value, bytes data);
-    event Rebalanced(address indexed caller, Regime fromRegime, Regime toRegime, int24 currentTick);
-    event RebalanceCooldownUpdated(uint256 previous, uint256 current);
-    event LiquidityWithdrawn(uint256 indexed tokenId, uint128 liquidity);
-    event LiquidityAdded(uint256 indexed tokenId, uint128 liquidity);
-    event PositionMinted(uint256 indexed tokenId, int24 tickLower, int24 tickUpper, uint128 liquidity);
-
-    /*//////////////////////////////////////////////////////////////
                                  ERRORS
     //////////////////////////////////////////////////////////////*/
 
@@ -145,13 +153,13 @@ contract PegSentinelVault is Ownable, Pausable, ReentrancyGuard {
     error InvalidTickSpacing(int24 tickSpacing);
     error InvalidTicks(int24 tickLower, int24 tickUpper);
     error InvalidThresholds();
-    error RegimeNotEnabled(Regime regime);
-    error NoLiquidityToWithdraw();
-    error InsufficientBalance(uint256 required0, uint256 required1, uint256 available0, uint256 available1);
     error PositionManagerNotSet();
     error NoRegimeChange();
     error TargetNotAllowed(address target);
     error ExecutionFailed(address target, bytes data);
+    error BufferAlreadyActive();
+    error BufferNotActive();
+    error InsufficientTreasuryUSDT(uint256 available, uint256 needed);
 
     /*//////////////////////////////////////////////////////////////
                               MODIFIERS
@@ -174,12 +182,12 @@ contract PegSentinelVault is Ownable, Pausable, ReentrancyGuard {
         if (_token0 == address(0) || _token1 == address(0) || _owner == address(0)) {
             revert ZeroAddress();
         }
-        
+
         // Ensure token0 < token1 (Uniswap V4 requirement)
         if (_token0 > _token1) {
             (_token0, _token1) = (_token1, _token0);
         }
-        
+
         token0 = IERC20(_token0);
         token1 = IERC20(_token1);
     }
@@ -227,18 +235,16 @@ contract PegSentinelVault is Ownable, Pausable, ReentrancyGuard {
                          EXECUTE (FOR SETUP/APPROVALS)
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Execute arbitrary call to allowed target
-    /// @dev Used for initial setup, approvals, and manual operations
-    function execute(address target, uint256 value, bytes calldata data) 
-        external 
-        onlyKeeperOrOwner 
-        returns (bytes memory result) 
+    function execute(address target, uint256 value, bytes calldata data)
+        external
+        onlyKeeperOrOwner
+        returns (bytes memory result)
     {
         if (!isAllowedTarget[target]) revert TargetNotAllowed(target);
-        
+
         (bool success, bytes memory ret) = target.call{value: value}(data);
         if (!success) revert ExecutionFailed(target, ret);
-        
+
         emit Executed(target, value, data);
         return ret;
     }
@@ -255,7 +261,7 @@ contract PegSentinelVault is Ownable, Pausable, ReentrancyGuard {
         address _hooks
     ) external onlyOwner {
         if (_tickSpacing <= 0) revert InvalidTickSpacing(_tickSpacing);
-        
+
         poolKey = PoolKey({
             currency0: Currency.wrap(_currency0),
             currency1: Currency.wrap(_currency1),
@@ -274,35 +280,28 @@ contract PegSentinelVault is Ownable, Pausable, ReentrancyGuard {
     }
 
     /*//////////////////////////////////////////////////////////////
-                         REGIME CONFIGURATION
+                         RANGE CONFIGURATION
     //////////////////////////////////////////////////////////////*/
 
-    function setRange(Regime regime, int24 tickLower, int24 tickUpper, bool enabled) external onlyOwner {
+    /// @notice Set the LP range (tight around peg, e.g. [-60, +60])
+    function setLPRange(int24 tickLower, int24 tickUpper) external onlyOwner {
         _validateTicks(tickLower, tickUpper);
-
-        if (regime == Regime.Normal) {
-            normalRange = RangeConfig(tickLower, tickUpper, enabled);
-        } else if (regime == Regime.Mild) {
-            mildRange = RangeConfig(tickLower, tickUpper, enabled);
-        } else {
-            severeRange = RangeConfig(tickLower, tickUpper, enabled);
-        }
-
-        emit RangeUpdated(regime, tickLower, tickUpper, enabled);
+        lpRange = RangeConfig(tickLower, tickUpper);
     }
 
-    function setThresholds(int24 _mildThreshold, int24 _severeThreshold) external onlyOwner {
-        if (_severeThreshold >= _mildThreshold) revert InvalidThresholds();
-        mildThreshold = _mildThreshold;
-        severeThreshold = _severeThreshold;
-        emit ThresholdsUpdated(_mildThreshold, _severeThreshold);
+    /// @notice Set the buffer range (below LP, e.g. [-240, -60])
+    function setBufferRange(int24 tickLower, int24 tickUpper) external onlyOwner {
+        _validateTicks(tickLower, tickUpper);
+        bufferRange = RangeConfig(tickLower, tickUpper);
     }
 
-    /// @notice Manually set the active regime (for initialization or emergency)
-    function setActiveRegime(Regime regime) external onlyKeeperOrOwner {
-        Regime prev = activeRegime;
-        activeRegime = regime;
-        emit ActiveRegimeUpdated(prev, regime);
+    /// @notice Set defend/recover thresholds with hysteresis
+    /// @param _defendThreshold  Deploy buffer when tick drops below this (e.g. -50)
+    /// @param _recoverThreshold Remove buffer when tick rises above this (e.g. -30)
+    function setThresholds(int24 _defendThreshold, int24 _recoverThreshold) external onlyOwner {
+        if (_recoverThreshold <= _defendThreshold) revert InvalidThresholds();
+        defendThreshold = _defendThreshold;
+        recoverThreshold = _recoverThreshold;
     }
 
     function _validateTicks(int24 tickLower, int24 tickUpper) internal view {
@@ -316,28 +315,11 @@ contract PegSentinelVault is Ownable, Pausable, ReentrancyGuard {
     }
 
     /*//////////////////////////////////////////////////////////////
-                         POSITION SETTERS
+                         POSITION SETTERS (SETUP)
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Set normal position metadata (script-compatible signature with bytes32 salt)
-    function setNormalPosition(
-        uint256 tokenId,
-        int24 tickLower,
-        int24 tickUpper,
-        bytes32 salt,
-        bool active
-    ) external onlyKeeperOrOwner {
-        // Query actual liquidity from position manager if available
-        uint128 liquidity = 0;
-        if (address(positionManager) != address(0) && tokenId != 0) {
-            liquidity = positionManager.getPositionLiquidity(tokenId);
-        }
-        normalPosition = PositionMeta(tokenId, tickLower, tickUpper, salt, liquidity, active);
-        emit PositionUpdated(bytes32("NORMAL"), tokenId, tickLower, tickUpper, liquidity, active);
-    }
-
-    /// @notice Set support position metadata (script-compatible signature with bytes32 salt)
-    function setSupportPosition(
+    /// @notice Set LP position metadata (after initial mint via script)
+    function setLPPosition(
         uint256 tokenId,
         int24 tickLower,
         int24 tickUpper,
@@ -348,8 +330,8 @@ contract PegSentinelVault is Ownable, Pausable, ReentrancyGuard {
         if (address(positionManager) != address(0) && tokenId != 0) {
             liquidity = positionManager.getPositionLiquidity(tokenId);
         }
-        supportPosition = PositionMeta(tokenId, tickLower, tickUpper, salt, liquidity, active);
-        emit PositionUpdated(bytes32("SUPPORT"), tokenId, tickLower, tickUpper, liquidity, active);
+        lpPosition = PositionMeta(tokenId, tickLower, tickUpper, salt, liquidity, active);
+        emit PositionUpdated(bytes32("LP"), tokenId, tickLower, tickUpper, liquidity, active);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -374,29 +356,86 @@ contract PegSentinelVault is Ownable, Pausable, ReentrancyGuard {
     }
 
     /*//////////////////////////////////////////////////////////////
-                          REGIME DETECTION
+                         FEE COLLECTION
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Get current tick from the pool
+    /// @notice Collect accumulated fees from LP position into treasury
+    /// @dev Calls DECREASE_LIQUIDITY with 0 amount to collect fees only
+    function collectFees() external onlyKeeperOrOwner nonReentrant {
+        if (address(positionManager) == address(0)) revert PositionManagerNotSet();
+        if (lpPosition.tokenId == 0 || !lpPosition.active) return;
+
+        uint256 bal0Before = token0.balanceOf(address(this));
+        uint256 bal1Before = token1.balanceOf(address(this));
+
+        // Decrease by 0 liquidity = collect fees only
+        bytes memory actions = abi.encodePacked(
+            uint8(Actions.DECREASE_LIQUIDITY),
+            uint8(Actions.TAKE_PAIR)
+        );
+
+        bytes[] memory params = new bytes[](2);
+
+        params[0] = abi.encode(
+            lpPosition.tokenId,
+            uint128(0),  // 0 liquidity = fees only
+            0,           // min amount0
+            0,           // min amount1
+            ""           // hookData
+        );
+
+        params[1] = abi.encode(
+            Currency.unwrap(poolKey.currency0),
+            Currency.unwrap(poolKey.currency1),
+            address(this)
+        );
+
+        positionManager.modifyLiquidities(
+            abi.encode(actions, params),
+            block.timestamp + 60
+        );
+
+        uint256 fees0 = token0.balanceOf(address(this)) - bal0Before;
+        uint256 fees1 = token1.balanceOf(address(this)) - bal1Before;
+
+        totalFeesCollected0 += fees0;
+        totalFeesCollected1 += fees1;
+
+        emit FeesCollected(fees0, fees1);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                         REGIME DETECTION
+    //////////////////////////////////////////////////////////////*/
+
     function getCurrentTick() public view returns (int24 tick) {
         PoolId poolId = poolKey.toId();
         (, tick,,) = poolManager.getSlot0(poolId);
     }
 
-    /// @notice Determine which regime the pool should be in based on current tick
+    /// @notice Determine target regime based on current tick and active regime (hysteresis)
     function determineRegime(int24 currentTick) public view returns (Regime) {
-        if (currentTick <= severeThreshold) return Regime.Severe;
-        if (currentTick <= mildThreshold) return Regime.Mild;
-        return Regime.Normal;
+        if (activeRegime == Regime.Normal) {
+            // Escalation: only enter Defend if tick drops below defend threshold
+            if (currentTick <= defendThreshold) return Regime.Defend;
+            return Regime.Normal;
+        } else {
+            // De-escalation: only return to Normal if tick rises above recover threshold
+            if (currentTick >= recoverThreshold) return Regime.Normal;
+            return Regime.Defend;
+        }
     }
 
-    /// @notice Get the target regime based on current pool state
     function getTargetRegime() external view returns (Regime) {
         return determineRegime(getCurrentTick());
     }
 
-    /// @notice Check if rebalance is needed
-    function needsRebalance() external view returns (bool needed, Regime currentRegime, Regime targetRegime, int24 currentTick) {
+    function needsRebalance() external view returns (
+        bool needed,
+        Regime currentRegime,
+        Regime targetRegime,
+        int24 currentTick
+    ) {
         currentTick = getCurrentTick();
         currentRegime = activeRegime;
         targetRegime = determineRegime(currentTick);
@@ -404,222 +443,182 @@ contract PegSentinelVault is Ownable, Pausable, ReentrancyGuard {
     }
 
     /*//////////////////////////////////////////////////////////////
-                         CORE AUTO-REBALANCE
+                         CORE: DEPLOY / REMOVE BUFFER
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Fully on-chain rebalance - keeper just calls this
-    /// @dev Withdraws from current position, deposits into target regime position
+    /// @notice Auto-rebalance: deploy or remove buffer based on regime
+    /// @dev Keeper calls this. LP is NEVER touched.
     function autoRebalance() external onlyKeeperOrOwner whenNotPaused nonReentrant {
         if (address(positionManager) == address(0)) revert PositionManagerNotSet();
-        
-        // 1. Check cooldown
+
+        // Check cooldown
         if (rebalanceCooldown != 0) {
             uint256 next = lastRebalanceAt + rebalanceCooldown;
             if (block.timestamp < next) revert CooldownActive(next);
         }
 
-        // 2. Get current tick and determine target regime
         int24 currentTick = getCurrentTick();
         Regime targetRegime = determineRegime(currentTick);
 
-        // 3. Skip if no change needed
         if (targetRegime == activeRegime) revert NoRegimeChange();
 
-        // 4. Get target range config
-        RangeConfig memory targetRange = _getRangeConfig(targetRegime);
-        if (!targetRange.enabled) revert RegimeNotEnabled(targetRegime);
-
-        // 5. Execute the rebalance
-        _executeRebalance(activeRegime, targetRegime, targetRange);
-
-        // 6. Update state
         Regime prevRegime = activeRegime;
+
+        if (targetRegime == Regime.Defend) {
+            _deployBuffer();
+        } else {
+            _removeBuffer();
+        }
+
         activeRegime = targetRegime;
         lastRebalanceAt = block.timestamp;
 
-        emit Rebalanced(msg.sender, prevRegime, targetRegime, currentTick);
+        emit RegimeChanged(prevRegime, targetRegime, currentTick);
     }
 
-    /// @notice Force rebalance to a specific regime (for testing/emergency)
-    function forceRebalance(Regime targetRegime) external onlyOwner whenNotPaused nonReentrant {
+    /// @notice Force deploy buffer (owner emergency)
+    function forceDeployBuffer() external onlyOwner whenNotPaused nonReentrant {
         if (address(positionManager) == address(0)) revert PositionManagerNotSet();
-        if (targetRegime == activeRegime) revert NoRegimeChange();
+        if (bufferPosition.active) revert BufferAlreadyActive();
 
-        RangeConfig memory targetRange = _getRangeConfig(targetRegime);
-        if (!targetRange.enabled) revert RegimeNotEnabled(targetRegime);
+        _deployBuffer();
 
-        _executeRebalance(activeRegime, targetRegime, targetRange);
-
-        Regime prevRegime = activeRegime;
-        activeRegime = targetRegime;
+        Regime prev = activeRegime;
+        activeRegime = Regime.Defend;
         lastRebalanceAt = block.timestamp;
 
-        int24 currentTick = getCurrentTick();
-        emit Rebalanced(msg.sender, prevRegime, targetRegime, currentTick);
+        emit RegimeChanged(prev, Regime.Defend, getCurrentTick());
+    }
+
+    /// @notice Force remove buffer (owner emergency)
+    function forceRemoveBuffer() external onlyOwner whenNotPaused nonReentrant {
+        if (address(positionManager) == address(0)) revert PositionManagerNotSet();
+        if (!bufferPosition.active) revert BufferNotActive();
+
+        _removeBuffer();
+
+        Regime prev = activeRegime;
+        activeRegime = Regime.Normal;
+        lastRebalanceAt = block.timestamp;
+
+        emit RegimeChanged(prev, Regime.Normal, getCurrentTick());
     }
 
     /*//////////////////////////////////////////////////////////////
-                       INTERNAL REBALANCE LOGIC
+                       INTERNAL: BUFFER DEPLOYMENT
     //////////////////////////////////////////////////////////////*/
 
-    function _getRangeConfig(Regime regime) internal view returns (RangeConfig memory) {
-        if (regime == Regime.Normal) return normalRange;
-        if (regime == Regime.Mild) return mildRange;
-        return severeRange;
-    }
+    /// @notice Deploy treasury USDT as single-sided buffer below LP range
+    function _deployBuffer() internal {
+        if (bufferPosition.active) revert BufferAlreadyActive();
 
-    function _executeRebalance(
-        Regime fromRegime,
-        Regime toRegime,
-        RangeConfig memory targetRange
-    ) internal {
-        // Step 1: Withdraw liquidity from current position
-        _withdrawFromCurrentPosition(fromRegime);
+        // Use all available USDT in treasury as buffer
+        // token1 = USDT (the strong token we deploy as defense)
+        uint256 usdtAvailable = token1.balanceOf(address(this));
+        if (usdtAvailable == 0) revert InsufficientTreasuryUSDT(0, 1);
 
-        // Step 2: Calculate how much liquidity we can add with current balances
-        uint256 bal0 = token0.balanceOf(address(this));
-        uint256 bal1 = token1.balanceOf(address(this));
+        // Buffer is single-sided USDT below current price
+        _approveTokens(0, usdtAvailable);
 
-        // Step 3: Add liquidity to target position
-        _addToTargetPosition(toRegime, targetRange, bal0, bal1);
-    }
-
-    function _withdrawFromCurrentPosition(Regime fromRegime) internal returns (uint128 liquidity) {
-        PositionMeta storage pos;
-        
-        if (fromRegime == Regime.Normal) {
-            pos = normalPosition;
-        } else {
-            pos = supportPosition;
-        }
-
-        if (!pos.active || pos.tokenId == 0) return 0;
-
-        // Query current liquidity from position manager
-        liquidity = positionManager.getPositionLiquidity(pos.tokenId);
-        if (liquidity == 0) return 0;
-
-        // Build decrease liquidity action
-        bytes memory actions = abi.encodePacked(
-            uint8(Actions.DECREASE_LIQUIDITY),
-            uint8(Actions.TAKE_PAIR)
-        );
-
-        bytes[] memory params = new bytes[](2);
-        
-        // DECREASE_LIQUIDITY params
-        params[0] = abi.encode(
-            pos.tokenId,
-            liquidity,
-            0, // min amount0
-            0, // min amount1
-            ""  // hookData
-        );
-
-        // TAKE_PAIR params - send tokens to this vault
-        params[1] = abi.encode(
-            Currency.unwrap(poolKey.currency0),
-            Currency.unwrap(poolKey.currency1),
-            address(this)
-        );
-
-        // Execute via PositionManager
-        positionManager.modifyLiquidities(
-            abi.encode(actions, params),
-            block.timestamp + 60
-        );
-
-        // Update position metadata
-        pos.liquidity = 0;
-        pos.active = false;
-
-        emit LiquidityWithdrawn(pos.tokenId, liquidity);
-        
-        return liquidity;
-    }
-
-    function _addToTargetPosition(
-        Regime toRegime,
-        RangeConfig memory targetRange,
-        uint256 amount0Max,
-        uint256 amount1Max
-    ) internal {
-        // Approve tokens to PositionManager via Permit2
-        _approveTokens(amount0Max, amount1Max);
-
-        PositionMeta storage targetPos;
-        bool isNormalTarget = (toRegime == Regime.Normal);
-        
-        if (isNormalTarget) {
-            targetPos = normalPosition;
-        } else {
-            targetPos = supportPosition;
-        }
-
-        // Calculate liquidity from available amounts
         uint128 liquidity = _calculateLiquidity(
-            targetRange.tickLower,
-            targetRange.tickUpper,
-            amount0Max,
-            amount1Max
+            bufferRange.tickLower,
+            bufferRange.tickUpper,
+            0,              // no USDC
+            usdtAvailable   // all USDT
         );
 
-        if (targetPos.tokenId != 0 && targetPos.tickLower == targetRange.tickLower && targetPos.tickUpper == targetRange.tickUpper) {
-            // Existing position with same range - increase liquidity
-            _increaseLiquidity(targetPos.tokenId, liquidity, amount0Max, amount1Max);
-            targetPos.liquidity += liquidity;
-            targetPos.active = true;
-            
-            emit LiquidityAdded(targetPos.tokenId, liquidity);
-        } else {
-            // Need to mint new position
-            uint256 newTokenId = _mintNewPosition(
-                targetRange.tickLower,
-                targetRange.tickUpper,
-                liquidity,
-                amount0Max,
-                amount1Max
+        uint256 tokenId = _mintNewPosition(
+            bufferRange.tickLower,
+            bufferRange.tickUpper,
+            liquidity,
+            0,
+            usdtAvailable
+        );
+
+        bufferPosition = PositionMeta({
+            tokenId: tokenId,
+            tickLower: bufferRange.tickLower,
+            tickUpper: bufferRange.tickUpper,
+            salt: bytes32(tokenId),
+            liquidity: liquidity,
+            active: true
+        });
+
+        emit BufferDeployed(bufferRange.tickLower, bufferRange.tickUpper, liquidity, usdtAvailable);
+        emit PositionUpdated(
+            bytes32("BUFFER"),
+            tokenId,
+            bufferRange.tickLower,
+            bufferRange.tickUpper,
+            liquidity,
+            true
+        );
+    }
+
+    /// @notice Remove buffer position — returns tokens to treasury
+    function _removeBuffer() internal {
+        if (!bufferPosition.active) revert BufferNotActive();
+
+        uint128 liquidity = positionManager.getPositionLiquidity(bufferPosition.tokenId);
+
+        if (liquidity > 0) {
+            bytes memory actions = abi.encodePacked(
+                uint8(Actions.DECREASE_LIQUIDITY),
+                uint8(Actions.TAKE_PAIR)
             );
 
-            // Update position metadata
-            targetPos.tokenId = newTokenId;
-            targetPos.tickLower = targetRange.tickLower;
-            targetPos.tickUpper = targetRange.tickUpper;
-            targetPos.salt = bytes32(newTokenId);
-            targetPos.liquidity = liquidity;
-            targetPos.active = true;
+            bytes[] memory params = new bytes[](2);
 
-            emit PositionMinted(newTokenId, targetRange.tickLower, targetRange.tickUpper, liquidity);
+            params[0] = abi.encode(
+                bufferPosition.tokenId,
+                liquidity,
+                0, // min amount0
+                0, // min amount1
+                "" // hookData
+            );
+
+            params[1] = abi.encode(
+                Currency.unwrap(poolKey.currency0),
+                Currency.unwrap(poolKey.currency1),
+                address(this)
+            );
+
+            positionManager.modifyLiquidities(
+                abi.encode(actions, params),
+                block.timestamp + 60
+            );
         }
 
-        emit PositionUpdated(
-            isNormalTarget ? bytes32("NORMAL") : bytes32("SUPPORT"),
-            targetPos.tokenId,
-            targetPos.tickLower,
-            targetPos.tickUpper,
-            targetPos.liquidity,
-            targetPos.active
-        );
+        emit BufferRemoved(bufferPosition.tokenId, liquidity);
+
+        // Clear buffer position
+        bufferPosition.liquidity = 0;
+        bufferPosition.active = false;
     }
 
-    function _approveTokens(uint256 amount0, uint256 amount1) internal {
-        // Reset and set approvals for Permit2
-        token0.forceApprove(address(permit2), amount0);
-        token1.forceApprove(address(permit2), amount1);
+    /*//////////////////////////////////////////////////////////////
+                       INTERNAL: UNISWAP V4 HELPERS
+    //////////////////////////////////////////////////////////////*/
 
-        // Approve PositionManager via Permit2
-        permit2.approve(
-            address(token0),
-            address(positionManager),
-            uint160(amount0),
-            uint48(block.timestamp + 3600)
-        );
-        permit2.approve(
-            address(token1),
-            address(positionManager),
-            uint160(amount1),
-            uint48(block.timestamp + 3600)
-        );
+    function _approveTokens(uint256 amount0, uint256 amount1) internal {
+        if (amount0 > 0) {
+            token0.forceApprove(address(permit2), amount0);
+            permit2.approve(
+                address(token0),
+                address(positionManager),
+                uint160(amount0),
+                uint48(block.timestamp + 3600)
+            );
+        }
+        if (amount1 > 0) {
+            token1.forceApprove(address(permit2), amount1);
+            permit2.approve(
+                address(token1),
+                address(positionManager),
+                uint160(amount1),
+                uint48(block.timestamp + 3600)
+            );
+        }
     }
 
     function _calculateLiquidity(
@@ -639,38 +638,6 @@ contract PegSentinelVault is Ownable, Pausable, ReentrancyGuard {
             sqrtPriceUpperX96,
             amount0,
             amount1
-        );
-    }
-
-    function _increaseLiquidity(
-        uint256 tokenId,
-        uint128 liquidity,
-        uint256 amount0Max,
-        uint256 amount1Max
-    ) internal {
-        bytes memory actions = abi.encodePacked(
-            uint8(Actions.INCREASE_LIQUIDITY),
-            uint8(Actions.SETTLE_PAIR)
-        );
-
-        bytes[] memory params = new bytes[](2);
-        
-        params[0] = abi.encode(
-            tokenId,
-            liquidity,
-            amount0Max,
-            amount1Max,
-            ""  // hookData
-        );
-
-        params[1] = abi.encode(
-            Currency.unwrap(poolKey.currency0),
-            Currency.unwrap(poolKey.currency1)
-        );
-
-        positionManager.modifyLiquidities(
-            abi.encode(actions, params),
-            block.timestamp + 60
         );
     }
 
@@ -695,8 +662,8 @@ contract PegSentinelVault is Ownable, Pausable, ReentrancyGuard {
             liquidity,
             amount0Max,
             amount1Max,
-            address(this), // owner of the NFT
-            ""  // hookData
+            address(this),
+            ""
         );
 
         params[1] = abi.encode(
@@ -704,7 +671,6 @@ contract PegSentinelVault is Ownable, Pausable, ReentrancyGuard {
             Currency.unwrap(poolKey.currency1)
         );
 
-        // Get tokenId before minting (next token ID)
         tokenId = positionManager.nextTokenId();
 
         positionManager.modifyLiquidities(
@@ -719,22 +685,34 @@ contract PegSentinelVault is Ownable, Pausable, ReentrancyGuard {
                                VIEW HELPERS
     //////////////////////////////////////////////////////////////*/
 
+    /// @notice Get vault token balances (= treasury when no buffer deployed)
     function balances() external view returns (uint256 bal0, uint256 bal1) {
         bal0 = token0.balanceOf(address(this));
         bal1 = token1.balanceOf(address(this));
     }
 
-    function getPositionInfo(Regime regime) external view returns (PositionMeta memory) {
-        if (regime == Regime.Normal) return normalPosition;
-        return supportPosition;
+    /// @notice Get treasury size (tokens in vault not deployed as buffer)
+    function treasuryBalances() external view returns (uint256 treasury0, uint256 treasury1) {
+        treasury0 = token0.balanceOf(address(this));
+        treasury1 = token1.balanceOf(address(this));
     }
 
-    function getRangeConfig(Regime regime) external view returns (RangeConfig memory) {
-        return _getRangeConfig(regime);
+    function getLPPosition() external view returns (PositionMeta memory) {
+        return lpPosition;
+    }
+
+    function getBufferPosition() external view returns (PositionMeta memory) {
+        return bufferPosition;
     }
 
     function getPoolId() external view returns (PoolId) {
         return poolKey.toId();
+    }
+
+    /// @notice Get buffer L value for display/monitoring
+    function getBufferLiquidity() external view returns (uint128) {
+        if (!bufferPosition.active || bufferPosition.tokenId == 0) return 0;
+        return positionManager.getPositionLiquidity(bufferPosition.tokenId);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -746,7 +724,6 @@ contract PegSentinelVault is Ownable, Pausable, ReentrancyGuard {
         IERC20(tokenAddr).safeTransfer(to, amount);
     }
 
-    /// @notice Receive NFTs (for LP position ownership)
     function onERC721Received(
         address,
         address,

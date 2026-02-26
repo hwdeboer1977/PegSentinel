@@ -61,9 +61,8 @@ contract MintPositionToVault is Script, BaseScript {
             hooks: hookContract
         });
 
-        // ---- read Normal range from vault (must already be configured) ----
-        (int24 tickLower, int24 tickUpper, bool enabled) = vault.normalRange();
-        require(enabled, "vault.normalRange not enabled");
+        // ---- read LP range from vault (must already be configured) ----
+        (int24 tickLower, int24 tickUpper) = vault.lpRange();
         require(tickLower < tickUpper, "invalid ticks");
         require(tickLower % tickSpacing == 0 && tickUpper % tickSpacing == 0, "ticks not aligned");
 
@@ -71,7 +70,7 @@ contract MintPositionToVault is Script, BaseScript {
         (uint160 sqrtPriceX96Now,,,) = poolManager.getSlot0(poolKey.toId());
         int24 currentTick = TickMath.getTickAtSqrtPrice(sqrtPriceX96Now);
 
-        console2.log("=== MintPositionToVault (Normal) ===");
+        console2.log("=== MintPositionToVault (LP at peg) ===");
         console2.log("vault:", vaultAddr);
         console2.log("currentTick:", int256(currentTick));
         console2.log("tickLower:", int256(tickLower));
@@ -82,7 +81,6 @@ contract MintPositionToVault is Script, BaseScript {
         vm.startBroadcast(pk);
 
         // ---- Configure vault if not already done ----
-        // (These are idempotent, safe to call again)
         vault.setPoolManager(address(poolManager));  
         vault.setPositionManager(address(positionManager));
         vault.setPermit2(address(permit2));
@@ -150,15 +148,12 @@ contract MintPositionToVault is Script, BaseScript {
         }
 
         // ---- Approve tokens from vault to Permit2 and PositionManager ----
-        // Vault needs to approve Permit2, then Permit2 approves PositionManager
         if (t0 != address(0)) {
-            // Vault approves Permit2
             vault.execute(
                 t0,
                 0,
                 abi.encodeWithSelector(IERC20.approve.selector, address(permit2), type(uint256).max)
             );
-            // Permit2 approves PositionManager
             vault.execute(
                 address(permit2),
                 0,
@@ -203,14 +198,15 @@ contract MintPositionToVault is Script, BaseScript {
         uint256 valueToPass = (t0 == address(0)) ? amount0Max : 0;
         vault.execute(address(positionManager), valueToPass, mintCall);
 
-        // ---- Register position in vault ----
-        vault.setNormalPosition(tokenId, tickLower, tickUpper, bytes32(tokenId), true);
-        vault.setActiveRegime(PegSentinelVault.Regime.Normal);
+        // ---- Register LP position in vault (this position never moves) ----
+        vault.setLPPosition(tokenId, tickLower, tickUpper, bytes32(tokenId), true);
 
         vm.stopBroadcast();
 
         console2.log("=== Done ===");
-        console2.log("Minted NORMAL position to vault");
+        console2.log("Minted LP position to vault (never moves)");
         console2.log("tokenId:", tokenId);
+        console2.log("");
+        console2.log("Next: keeper calls vault.collectFees() periodically");
     }
 }

@@ -18,22 +18,28 @@ import {BaseScript} from "./base/BaseScript.sol";
 import {PegSentinelVault} from "../src/PegSentinelVault.sol";
 
 // Run:
-// 1. set -a; source .env; set +a
+// 1. set -a; source .env.anvil; set +a
 
-// 1. TestVaultScript - Full vault inspection
-// 1b. forge script script/TestVault.s.sol:TestVaultScript --rpc-url $ARB_RPC --broadcast -vvvv --via-ir
+// 5. TestKeeperSetupScript - Set keeper and test permissions
+//    forge script script/TestVault.s.sol:TestKeeperSetupScript --rpc-url $RPC_URL --broadcast -vvvv --via-ir
 
-// 2. TestAutoRebalanceScript - Test automatic rebalancing
-// 2b. forge script script/TestVault.s.sol:TestAutoRebalanceScript --rpc-url $ARB_RPC --broadcast -vvvv --via-ir
+// 6. TestWithdrawTreasuryScript - Test treasury withdrawal
+//    forge script script/TestVault.s.sol:TestWithdrawTreasuryScript --rpc-url $RPC_URL --broadcast -vvvv --via-ir
 
-// 3. TestForceRebalanceScript - Force regime change
-// 3a. forge script script/TestVault.s.sol:TestForceRebalanceScript --rpc-url $ARB_RPC --broadcast -vvvv --via-ir
+// 7. TestPauseScript - Test pause/unpause
+//    forge script script/TestVault.s.sol:TestPauseScript --rpc-url $RPC_URL --broadcast -vvvv --via-ir
 
-/// @title TestVaultScript
-/// @notice Tests all core vault functions: config, regimes, thresholds, and needsRebalance
-contract TestVaultScript is Script, BaseScript {
+// 8. TestRescueTokenScript - Test emergency token rescue
+//    forge script script/TestVault.s.sol:TestRescueTokenScript --rpc-url $RPC_URL --broadcast -vvvv --via-ir
+
+// 9. TestFullDefenseCycleScript - Full cycle: fees → depeg → buffer → recover → profit
+//    forge script script/TestVault.s.sol:TestFullDefenseCycleScript --rpc-url $RPC_URL --broadcast -vvvv --via-ir
+
+
+/// @title TestKeeperSetupScript
+/// @notice Tests setKeeper and verifies keeper can call keeper-gated functions
+contract TestKeeperSetupScript is Script, BaseScript {
     using CurrencyLibrary for Currency;
-    using PoolIdLibrary for PoolKey;
     using StateLibrary for IPoolManager;
 
     function run() external {
@@ -43,278 +49,388 @@ contract TestVaultScript is Script, BaseScript {
         PegSentinelVault vault = PegSentinelVault(payable(vaultAddr));
 
         console2.log("========================================");
-        console2.log("       PegSentinelVault Test Script     ");
+        console2.log("       Test Keeper Setup                ");
         console2.log("========================================");
         console2.log("");
 
-        // ============ 1. Basic Config ============
-        console2.log("=== 1. BASIC CONFIGURATION ===");
-        console2.log("Vault address:", vaultAddr);
-        console2.log("Owner:", vault.owner());
-        console2.log("Keeper:", vault.keeper());
-        console2.log("Token0:", address(vault.token0()));
-        console2.log("Token1:", address(vault.token1()));
-        console2.log("PositionManager:", address(vault.positionManager()));
-        console2.log("Permit2:", address(vault.permit2()));
-        console2.log("Rebalance cooldown:", vault.rebalanceCooldown());
-        console2.log("Last rebalance at:", vault.lastRebalanceAt());
+        console2.log("Current keeper:", vault.keeper());
+
+        vm.startBroadcast(pk);
+
+        // Set deployer as keeper (for testing)
+        address deployer = vm.addr(pk);
+        console2.log("Setting keeper to deployer:", deployer);
+        vault.setKeeper(deployer);
+        console2.log("Keeper now:", vault.keeper());
+
+        // Verify keeper can call collectFees (keeper-gated)
+        console2.log("");
+        console2.log("Testing keeper can call collectFees()...");
+        vault.collectFees();
+        console2.log("  Success: keeper can collect fees");
+
+        // Verify keeper can call needsRebalance (view, no gate)
+        (bool needed, , , int24 tick) = vault.needsRebalance();
+        console2.log("  needsRebalance: needed=", needed);
+        console2.log("  tick:", int256(tick));
+
+        vm.stopBroadcast();
+
+        console2.log("");
+        console2.log("Keeper setup test complete!");
+    }
+}
+
+
+/// @title TestWithdrawTreasuryScript
+/// @notice Tests withdrawTreasury — owner pulls profits from vault
+contract TestWithdrawTreasuryScript is Script, BaseScript {
+    using CurrencyLibrary for Currency;
+    using StateLibrary for IPoolManager;
+
+    function run() external {
+        uint256 pk = uint256(vm.envBytes32("PRIVATE_KEY"));
+        address vaultAddr = vm.envAddress("VAULT_ADDRESS");
+        // How much to withdraw (default: 1000 tokens, 6 decimals)
+        uint256 withdrawAmount0 = vm.envOr("WITHDRAW_AMOUNT0", uint256(1000e6));
+        uint256 withdrawAmount1 = vm.envOr("WITHDRAW_AMOUNT1", uint256(1000e6));
+
+        PegSentinelVault vault = PegSentinelVault(payable(vaultAddr));
+        address deployer = vm.addr(pk);
+
+        console2.log("========================================");
+        console2.log("       Test Treasury Withdrawal         ");
+        console2.log("========================================");
         console2.log("");
 
-        // ============ 2. Regime Configuration ============
-        console2.log("=== 2. REGIME CONFIGURATION ===");
+        // Before
+        (uint256 vaultBal0, uint256 vaultBal1) = vault.balances();
+        (uint256 treas0, uint256 treas1) = vault.treasuryBalances();
+        uint256 walletBal0 = IERC20(address(vault.token0())).balanceOf(deployer);
+        uint256 walletBal1 = IERC20(address(vault.token1())).balanceOf(deployer);
+
+        console2.log("Before withdrawal:");
+        console2.log("  Vault balances  - USDC:", vaultBal0);
+        console2.log("  Vault balances  - USDT:", vaultBal1);
+        console2.log("  Treasury view   - USDC:", treas0);
+        console2.log("  Treasury view   - USDT:", treas1);
+        console2.log("  Wallet          - USDC:", walletBal0);
+        console2.log("  Wallet          - USDT:", walletBal1);
+        console2.log("");
+
+        // Cap withdrawal to available balance
+        if (withdrawAmount0 > vaultBal0) withdrawAmount0 = vaultBal0;
+        if (withdrawAmount1 > vaultBal1) withdrawAmount1 = vaultBal1;
+
+        console2.log("Withdrawing USDC:", withdrawAmount0);
+        console2.log("Withdrawing USDT:", withdrawAmount1);
+
+        vm.startBroadcast(pk);
+        vault.withdrawTreasury(deployer, withdrawAmount0, withdrawAmount1);
+        vm.stopBroadcast();
+
+        // After
+        (uint256 vaultBal0After, uint256 vaultBal1After) = vault.balances();
+        uint256 walletBal0After = IERC20(address(vault.token0())).balanceOf(deployer);
+        uint256 walletBal1After = IERC20(address(vault.token1())).balanceOf(deployer);
+
+        console2.log("");
+        console2.log("After withdrawal:");
+        console2.log("  Vault balances  - USDC:", vaultBal0After);
+        console2.log("  Vault balances  - USDT:", vaultBal1After);
+        console2.log("  Wallet          - USDC:", walletBal0After);
+        console2.log("  Wallet          - USDT:", walletBal1After);
+        console2.log("  Wallet gained   - USDC:", walletBal0After - walletBal0);
+        console2.log("  Wallet gained   - USDT:", walletBal1After - walletBal1);
+
+        console2.log("");
+        console2.log("Treasury withdrawal test complete!");
+    }
+}
+
+
+/// @title TestPauseScript
+/// @notice Tests pause/unpause and verifies paused vault blocks operations
+contract TestPauseScript is Script, BaseScript {
+    using CurrencyLibrary for Currency;
+    using StateLibrary for IPoolManager;
+
+    function run() external {
+        uint256 pk = uint256(vm.envBytes32("PRIVATE_KEY"));
+        address vaultAddr = vm.envAddress("VAULT_ADDRESS");
+
+        PegSentinelVault vault = PegSentinelVault(payable(vaultAddr));
+
+        console2.log("========================================");
+        console2.log("       Test Pause / Unpause             ");
+        console2.log("========================================");
+        console2.log("");
+
+        vm.startBroadcast(pk);
+
+        // 1. Pause the vault
+        console2.log("Pausing vault...");
+        vault.pause();
+        console2.log("  Paused successfully");
+
+        // 2. Try collectFees while paused — should still work (not pausable-gated)
+        // But fund() and autoRebalance() are whenNotPaused
+        console2.log("");
+        console2.log("Testing fund() while paused...");
+        try vault.fund(0, 0) {
+            console2.log("  ERROR: fund() should have reverted while paused!");
+        } catch {
+            console2.log("  Correctly reverted: fund() blocked while paused");
+        }
+
+        console2.log("");
+        console2.log("Testing forceDeployBuffer() while paused...");
+        try vault.forceDeployBuffer() {
+            console2.log("  ERROR: forceDeployBuffer() should have reverted!");
+        } catch {
+            console2.log("  Correctly reverted: forceDeployBuffer() blocked while paused");
+        }
+
+        // 3. Unpause
+        console2.log("");
+        console2.log("Unpausing vault...");
+        vault.unpause();
+        console2.log("  Unpaused successfully");
+
+        // 4. Verify operations work again
+        console2.log("Testing fund(0,0) after unpause...");
+        vault.fund(0, 0);
+        console2.log("  Success: fund() works after unpause");
+
+        vm.stopBroadcast();
+
+        console2.log("");
+        console2.log("Pause/Unpause test complete!");
+    }
+}
+
+
+/// @title TestRescueTokenScript
+/// @notice Tests rescueToken — emergency recovery of stuck tokens
+contract TestRescueTokenScript is Script, BaseScript {
+    using CurrencyLibrary for Currency;
+    using StateLibrary for IPoolManager;
+
+    function run() external {
+        uint256 pk = uint256(vm.envBytes32("PRIVATE_KEY"));
+        address vaultAddr = vm.envAddress("VAULT_ADDRESS");
+
+        PegSentinelVault vault = PegSentinelVault(payable(vaultAddr));
+        address deployer = vm.addr(pk);
+        address token0Addr = address(vault.token0());
+
+        console2.log("========================================");
+        console2.log("       Test Rescue Token                ");
+        console2.log("========================================");
+        console2.log("");
+
+        (uint256 vaultBal0, ) = vault.balances();
+        uint256 walletBal0 = IERC20(token0Addr).balanceOf(deployer);
+
+        console2.log("Before rescue:");
+        console2.log("  Vault USDC:", vaultBal0);
+        console2.log("  Wallet USDC:", walletBal0);
+
+        if (vaultBal0 == 0) {
+            console2.log("");
+            console2.log("No tokens in vault to rescue. Fund vault first.");
+            return;
+        }
+
+        // Rescue a small amount (1 token)
+        uint256 rescueAmount = 1e6; // 1 USDC
+        if (rescueAmount > vaultBal0) rescueAmount = vaultBal0;
+
+        console2.log("");
+        console2.log("Rescuing USDC:", rescueAmount);
+
+        vm.startBroadcast(pk);
+        vault.rescueToken(token0Addr, deployer, rescueAmount);
+        vm.stopBroadcast();
+
+        (uint256 vaultBal0After, ) = vault.balances();
+        uint256 walletBal0After = IERC20(token0Addr).balanceOf(deployer);
+
+        console2.log("");
+        console2.log("After rescue:");
+        console2.log("  Vault USDC:", vaultBal0After);
+        console2.log("  Wallet USDC:", walletBal0After);
+        console2.log("  Rescued:", walletBal0After - walletBal0);
+
+        console2.log("");
+        console2.log("Rescue token test complete!");
+    }
+}
+
+
+/// @title TestFullDefenseCycleScript
+/// @notice Tests the complete V2 defense cycle:
+///   1. Check LP position & treasury
+///   2. Collect fees into treasury
+///   3. Force deploy buffer (simulate depeg)
+///   4. Check buffer state & treasury depletion
+///   5. Force remove buffer (simulate recovery)
+///   6. Check treasury P&L
+///
+/// NOTE: This uses forceDeployBuffer/forceRemoveBuffer to simulate the cycle
+/// without needing actual swaps to move the tick. For a real test with swaps,
+/// use the swap script between steps.
+contract TestFullDefenseCycleScript is Script, BaseScript {
+    using CurrencyLibrary for Currency;
+    using StateLibrary for IPoolManager;
+
+    function run() external {
+        uint256 pk = uint256(vm.envBytes32("PRIVATE_KEY"));
+        address vaultAddr = vm.envAddress("VAULT_ADDRESS");
+
+        PegSentinelVault vault = PegSentinelVault(payable(vaultAddr));
+
+        console2.log("========================================");
+        console2.log("     Full Defense Cycle Test (V2)       ");
+        console2.log("========================================");
+        console2.log("");
+
+        // ============ PHASE 1: Initial State ============
+        console2.log("=== PHASE 1: INITIAL STATE ===");
+
+        (uint256 lpTokenId, , , , uint128 lpLiq, bool lpActive) = vault.lpPosition();
+        console2.log("LP tokenId:", lpTokenId);
+        console2.log("LP liquidity:", uint256(lpLiq));
+        console2.log("LP active:", lpActive);
+
+        if (!lpActive || lpTokenId == 0) {
+            console2.log("ERROR: No active LP position. Run 05_MintPositionToVault first.");
+            return;
+        }
+
+        (uint256 bal0Start, uint256 bal1Start) = vault.balances();
+        console2.log("Treasury USDC:", bal0Start);
+        console2.log("Treasury USDT:", bal1Start);
+
+        uint128 bufferLiqStart = vault.getBufferLiquidity();
+        console2.log("Buffer liquidity:", uint256(bufferLiqStart));
         console2.log("Active regime:", uint256(vault.activeRegime()));
-        console2.log("  (0=Normal, 1=Mild, 2=Severe)");
-        console2.log("");
 
-        // Normal range
-        (int24 nLo, int24 nHi, bool nEn) = vault.normalRange();
-        console2.log("Normal Range:");
-        console2.log("  tickLower:", int256(nLo));
-        console2.log("  tickUpper:", int256(nHi));
-        console2.log("  enabled:", nEn);
-
-        // Mild range
-        (int24 mLo, int24 mHi, bool mEn) = vault.mildRange();
-        console2.log("Mild Range:");
-        console2.log("  tickLower:", int256(mLo));
-        console2.log("  tickUpper:", int256(mHi));
-        console2.log("  enabled:", mEn);
-
-        // Severe range
-        (int24 sLo, int24 sHi, bool sEn) = vault.severeRange();
-        console2.log("Severe Range:");
-        console2.log("  tickLower:", int256(sLo));
-        console2.log("  tickUpper:", int256(sHi));
-        console2.log("  enabled:", sEn);
-        console2.log("");
-
-        // ============ 3. Thresholds ============
-        console2.log("=== 3. REGIME THRESHOLDS ===");
-        console2.log("Mild threshold:", int256(vault.mildThreshold()));
-        console2.log("Severe threshold:", int256(vault.severeThreshold()));
-        console2.log("  (tick <= severe => Severe)");
-        console2.log("  (tick <= mild => Mild)");
-        console2.log("  (else => Normal)");
-        console2.log("");
-
-        // ============ 4. Position Metadata ============
-        console2.log("=== 4. POSITION METADATA ===");
-        
-        (uint256 nTokenId, int24 nPosLo, int24 nPosHi, bytes32 nSalt, uint128 nLiq, bool nActive) = vault.normalPosition();
-        console2.log("Normal Position:");
-        console2.log("  tokenId:", nTokenId);
-        console2.log("  tickLower:", int256(nPosLo));
-        console2.log("  tickUpper:", int256(nPosHi));
-        console2.log("  liquidity:", uint256(nLiq));
-        console2.log("  active:", nActive);
-
-        (uint256 sTokenId, int24 sPosLo, int24 sPosHi, bytes32 sSalt, uint128 sLiq, bool sActive) = vault.supportPosition();
-        console2.log("Support Position:");
-        console2.log("  tokenId:", sTokenId);
-        console2.log("  tickLower:", int256(sPosLo));
-        console2.log("  tickUpper:", int256(sPosHi));
-        console2.log("  liquidity:", uint256(sLiq));
-        console2.log("  active:", sActive);
-        console2.log("");
-
-        // ============ 5. Vault Balances ============
-        console2.log("=== 5. VAULT BALANCES ===");
-        (uint256 bal0, uint256 bal1) = vault.balances();
-        console2.log("Token0 balance:", bal0);
-        console2.log("Token1 balance:", bal1);
-        console2.log("");
-
-        // ============ 6. Pool State & Regime Detection ============
-        console2.log("=== 6. POOL STATE & REGIME DETECTION ===");
-        
-        // Only test if poolKey is configured
         PoolId poolId = vault.getPoolId();
         if (PoolId.unwrap(poolId) != bytes32(0)) {
-            int24 currentTick = vault.getCurrentTick();
-            console2.log("Current tick:", int256(currentTick));
+            console2.log("Current tick:", int256(vault.getCurrentTick()));
+        }
+        console2.log("");
 
-            PegSentinelVault.Regime determinedRegime = vault.determineRegime(currentTick);
-            console2.log("Determined regime for current tick:", uint256(determinedRegime));
+        vm.startBroadcast(pk);
 
-            PegSentinelVault.Regime targetRegime = vault.getTargetRegime();
-            console2.log("Target regime (from getTargetRegime):", uint256(targetRegime));
+        // ============ PHASE 2: Collect Fees ============
+        console2.log("=== PHASE 2: COLLECT FEES ===");
+        vault.collectFees();
 
+        (uint256 bal0AfterFees, uint256 bal1AfterFees) = vault.balances();
+        console2.log("Treasury after collectFees:");
+        console2.log("  USDC:", bal0AfterFees);
+        console2.log("  USDT:", bal1AfterFees);
+        console2.log("  Fees earned USDC:", bal0AfterFees - bal0Start);
+        console2.log("  Fees earned USDT:", bal1AfterFees - bal1Start);
+        console2.log("  Total fees collected USDC:", vault.totalFeesCollected0());
+        console2.log("  Total fees collected USDT:", vault.totalFeesCollected1());
+        console2.log("");
 
+        // ============ PHASE 3: Deploy Buffer (Simulate Depeg) ============
+        console2.log("=== PHASE 3: DEPLOY BUFFER (DEFEND) ===");
+
+        if (bal1AfterFees == 0) {
+            console2.log("WARNING: No USDT in treasury to deploy buffer.");
+            console2.log("Need swaps to generate fees, or fund vault with USDT.");
+            console2.log("Funding 1000 USDT for testing...");
+
+            // Fund some USDT for testing
+            address t1 = address(vault.token1());
+            uint256 testFund = 1000e6;
+            IERC20(t1).approve(vaultAddr, testFund);
+            vault.fund(0, testFund);
+
+            (, bal1AfterFees) = vault.balances();
+            console2.log("  Treasury USDT after fund:", bal1AfterFees);
+        }
+
+        console2.log("Deploying buffer (forceDeployBuffer)...");
+        vault.forceDeployBuffer();
+
+        console2.log("Regime after deploy:", uint256(vault.activeRegime()));
+
+        (, , , , uint128 bufLiqAfterDeploy, bool bufActiveAfterDeploy) = vault.bufferPosition();
+        console2.log("Buffer active:", bufActiveAfterDeploy);
+        console2.log("Buffer liquidity:", uint256(bufLiqAfterDeploy));
+
+        uint128 bufLiqOnChain = vault.getBufferLiquidity();
+        console2.log("Buffer L (on-chain):", uint256(bufLiqOnChain));
+
+        (uint256 bal0AfterDeploy, uint256 bal1AfterDeploy) = vault.balances();
+        console2.log("Treasury after deploy:");
+        console2.log("  USDC:", bal0AfterDeploy);
+        console2.log("  USDT:", bal1AfterDeploy);
+        console2.log("  USDT deployed to buffer:", bal1AfterFees - bal1AfterDeploy);
+        console2.log("");
+
+        // ============ PHASE 4: Remove Buffer (Simulate Recovery) ============
+        console2.log("=== PHASE 4: REMOVE BUFFER (RECOVER) ===");
+        console2.log("Removing buffer (forceRemoveBuffer)...");
+        vault.forceRemoveBuffer();
+
+        console2.log("Regime after remove:", uint256(vault.activeRegime()));
+
+        (, , , , uint128 bufLiqAfterRemove, bool bufActiveAfterRemove) = vault.bufferPosition();
+        console2.log("Buffer active:", bufActiveAfterRemove);
+        console2.log("Buffer liquidity:", uint256(bufLiqAfterRemove));
+
+        (uint256 bal0AfterRemove, uint256 bal1AfterRemove) = vault.balances();
+        console2.log("Treasury after remove:");
+        console2.log("  USDC:", bal0AfterRemove);
+        console2.log("  USDT:", bal1AfterRemove);
+        console2.log("");
+
+        // ============ PHASE 5: P&L Summary ============
+        console2.log("=== PHASE 5: P&L SUMMARY ===");
+        console2.log("Starting treasury:");
+        console2.log("  USDC:", bal0Start);
+        console2.log("  USDT:", bal1Start);
+        console2.log("Ending treasury:");
+        console2.log("  USDC:", bal0AfterRemove);
+        console2.log("  USDT:", bal1AfterRemove);
+
+        // Calculate changes (handle underflow safely)
+        if (bal0AfterRemove >= bal0Start) {
+            console2.log("  USDC gained:", bal0AfterRemove - bal0Start);
         } else {
-            console2.log("Pool key not configured yet - skipping pool state checks");
+            console2.log("  USDC lost:", bal0Start - bal0AfterRemove);
         }
-        console2.log("");
-
-        // ============ 7. Test Admin Functions (broadcast) ============
-        console2.log("=== 7. TESTING ADMIN FUNCTIONS ===");
-        
-        vm.startBroadcast(pk);
-
-        // Test setThresholds
-        // Set thresholds to match ranges:
-        // Tick > -240 → Normal (range -240 to 240)
-        // Tick <= -240 and > -540 → Mild (range -540 to 0)  
-        // Tick <= -540 → Severe (range -1620 to -300)
-        console2.log("Setting thresholds: mild=-240, severe=-540...");
-        vault.setThresholds(-240, -540);
-        console2.log("  Thresholds set successfully");
-
-        // needsRebalance check
-        (bool needed, PegSentinelVault.Regime currReg, PegSentinelVault.Regime targReg, int24 tick) = vault.needsRebalance();
-        console2.log("");
-        console2.log("needsRebalance() result:");
-        console2.log("  needs rebalance:", needed);
-        console2.log("  current regime:", uint256(currReg));
-        console2.log("  target regime:", uint256(targReg));
-        console2.log("  current tick:", int256(tick));
-
-
-        // Test setRebalanceCooldown
-        console2.log("Setting rebalance cooldown to 60 seconds...");
-        vault.setRebalanceCooldown(60);
-        console2.log("  Cooldown set to:", vault.rebalanceCooldown());
-
-        // Test setActiveRegime
-        console2.log("Setting active regime to Normal (0)...");
-        vault.setActiveRegime(PegSentinelVault.Regime.Normal);
-        console2.log("  Active regime now:", uint256(vault.activeRegime()));
-
-        // Test setAllowedTarget
-        address testTarget = address(0x1234567890123456789012345678901234567890);
-        console2.log("Setting test target as allowed...");
-        vault.setAllowedTarget(testTarget, true);
-        console2.log("  isAllowedTarget:", vault.isAllowedTarget(testTarget));
-
-        // Remove it
-        vault.setAllowedTarget(testTarget, false);
-        console2.log("  Removed, isAllowedTarget:", vault.isAllowedTarget(testTarget));
-
-        vm.stopBroadcast();
-
-        console2.log("");
-        console2.log("========================================");
-        console2.log("       All Tests Completed!             ");
-        console2.log("========================================");
-    }
-}
-
-
-/// @title TestAutoRebalanceScript  
-/// @notice Tests the autoRebalance function (requires funded position)
-contract TestAutoRebalanceScript is Script, BaseScript {
-    using CurrencyLibrary for Currency;
-    using StateLibrary for IPoolManager;
-
-    function run() external {
-        uint256 pk = uint256(vm.envBytes32("PRIVATE_KEY"));
-        address vaultAddr = vm.envAddress("VAULT_ADDRESS");
-
-        PegSentinelVault vault = PegSentinelVault(payable(vaultAddr));
-
-        console2.log("========================================");
-        console2.log("     Test autoRebalance Function        ");
-        console2.log("========================================");
-        console2.log("");
-
-        // Check if rebalance is needed
-        (bool needed, PegSentinelVault.Regime currReg, PegSentinelVault.Regime targReg, int24 tick) = vault.needsRebalance();
-        
-        console2.log("Current state:");
-        console2.log("  Current tick:", int256(tick));
-        console2.log("  Current regime:", uint256(currReg));
-        console2.log("  Target regime:", uint256(targReg));
-        console2.log("  Needs rebalance:", needed);
-        console2.log("");
-
-        if (!needed) {
-            console2.log("No rebalance needed - regimes match");
-            console2.log("To test, either:");
-            console2.log("  1. Swap to move the price (change tick)");
-            console2.log("  2. Use forceRebalance(Regime) to force a regime change");
-            return;
-        }
-
-        console2.log("Rebalance IS needed. Executing autoRebalance()...");
-        
-        vm.startBroadcast(pk);
-        
-        vault.autoRebalance();
-        
-        vm.stopBroadcast();
-
-        // Check new state
-        (bool neededAfter, PegSentinelVault.Regime currRegAfter, PegSentinelVault.Regime targRegAfter, int24 tickAfter) = vault.needsRebalance();
-        
-        console2.log("");
-        console2.log("After rebalance:");
-        console2.log("  Current tick:", int256(tickAfter));
-        console2.log("  Current regime:", uint256(currRegAfter));
-        console2.log("  Target regime:", uint256(targRegAfter));
-        console2.log("  Needs rebalance:", neededAfter);
-        
-        console2.log("");
-        console2.log("autoRebalance test complete!");
-    }
-}
-
-
-/// @title TestForceRebalanceScript
-/// @notice Tests forceRebalance to a specific regime
-contract TestForceRebalanceScript is Script, BaseScript {
-    using CurrencyLibrary for Currency;
-    using StateLibrary for IPoolManager;
-
-    function run() external {
-        uint256 pk = uint256(vm.envBytes32("PRIVATE_KEY"));
-        address vaultAddr = vm.envAddress("VAULT_ADDRESS");
-        uint256 targetRegimeRaw = vm.envOr("TARGET_REGIME", uint256(2)); // Default to Mild
-
-        PegSentinelVault vault = PegSentinelVault(payable(vaultAddr));
-        PegSentinelVault.Regime targetRegime = PegSentinelVault.Regime(targetRegimeRaw);
-
-        console2.log("========================================");
-        console2.log("     Test forceRebalance Function       ");
-        console2.log("========================================");
-        console2.log("");
-
-        console2.log("Current active regime:", uint256(vault.activeRegime()));
-        console2.log("Target regime:", uint256(targetRegime));
-        console2.log("");
-
-        if (vault.activeRegime() == targetRegime) {
-            console2.log("Already in target regime! Set TARGET_REGIME env to a different value.");
-            console2.log("  0 = Normal");
-            console2.log("  1 = Mild");
-            console2.log("  2 = Severe");
-            return;
-        }
-
-        console2.log("Executing forceRebalance...");
-        
-        vm.startBroadcast(pk);
-        
-        vault.forceRebalance(targetRegime);
-        
-        vm.stopBroadcast();
-
-        console2.log("");
-        console2.log("After forceRebalance:");
-        console2.log("  Active regime:", uint256(vault.activeRegime()));
-        
-        // Show position info
-        if (targetRegime == PegSentinelVault.Regime.Normal) {
-            (uint256 tokenId,,,,uint128 liq, bool active) = vault.normalPosition();
-            console2.log("  Normal position tokenId:", tokenId);
-            console2.log("  Normal position liquidity:", uint256(liq));
-            console2.log("  Normal position active:", active);
+        if (bal1AfterRemove >= bal1Start) {
+            console2.log("  USDT gained:", bal1AfterRemove - bal1Start);
         } else {
-            (uint256 tokenId,,,,uint128 liq, bool active) = vault.supportPosition();
-            console2.log("  Support position tokenId:", tokenId);
-            console2.log("  Support position liquidity:", uint256(liq));
-            console2.log("  Support position active:", active);
+            console2.log("  USDT lost:", bal1Start - bal1AfterRemove);
         }
 
         console2.log("");
-        console2.log("forceRebalance test complete!");
+        console2.log("LP position unchanged:");
+        (, , , , uint128 lpLiqEnd, bool lpActiveEnd) = vault.lpPosition();
+        console2.log("  LP liquidity:", uint256(lpLiqEnd));
+        console2.log("  LP active:", lpActiveEnd);
+        console2.log("  LP liquidity same:", lpLiq == lpLiqEnd);
+
+        vm.stopBroadcast();
+
+        console2.log("");
+        console2.log("========================================");
+        console2.log("   Full Defense Cycle Test Complete!     ");
+        console2.log("========================================");
+        console2.log("");
+        console2.log("NOTE: In this test, no swaps occurred during buffer");
+        console2.log("deployment, so treasury should be roughly unchanged.");
+        console2.log("For real P&L, run swaps between deploy and remove.");
+        console2.log("The buffer would absorb sell pressure (buying USDC");
+        console2.log("at discount) and profit on recovery.");
     }
 }
