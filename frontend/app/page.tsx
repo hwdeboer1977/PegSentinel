@@ -59,7 +59,7 @@ export default function OverviewPage() {
             <SectionLabel color="text-emerald-400/70">System Status</SectionLabel>
 
             <div className="space-y-2">
-              <div className="flex items-center justify-between p-3.5 bg-[#1a1b23] rounded-xl border border-[#333444]">
+              <div className="flex items-center justify-between p-3.5 bg-[var(--inner)] rounded-xl border border-[var(--border)]">
                 <span className="text-xs text-zinc-500">Active Regime</span>
                 <RegimeBadge regime={ps.regimeName} status={ps.regimeStatus} />
               </div>
@@ -99,14 +99,14 @@ export default function OverviewPage() {
 
             {/* Vault summary */}
             {ps.balances && (
-              <div className="pt-3 border-t border-[#333444]/60">
+              <div className="pt-3 border-t border-[var(--border)]/60">
                 <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-2">Vault Reserves</div>
                 <div className="grid grid-cols-2 gap-2">
-                  <div className="p-3 bg-[#1a1b23] rounded-lg border border-[#333444] text-center">
+                  <div className="p-3 bg-[var(--inner)] rounded-lg border border-[var(--border)] text-center">
                     <div className="text-[10px] text-zinc-500 mb-1">{ps.symbol0}</div>
                     <div className="text-sm font-mono text-zinc-100">{formatBalance(ps.balances.bal0, ps.decimals0)}</div>
                   </div>
-                  <div className="p-3 bg-[#1a1b23] rounded-lg border border-[#333444] text-center">
+                  <div className="p-3 bg-[var(--inner)] rounded-lg border border-[var(--border)] text-center">
                     <div className="text-[10px] text-zinc-500 mb-1">{ps.symbol1}</div>
                     <div className="text-sm font-mono text-zinc-100">{formatBalance(ps.balances.bal1, ps.decimals1)}</div>
                   </div>

@@ -21,7 +21,7 @@ export function Shell({
   const pathname = usePathname();
 
   return (
-    <main className="min-h-screen bg-[#13141a] text-zinc-100 selection:bg-emerald-500/20">
+    <main className="min-h-screen bg-[var(--bg)] text-zinc-100 selection:bg-emerald-500/20">
       {/* Background */}
       <div className="fixed inset-0 -z-10 pointer-events-none">
         <div className="absolute top-0 left-1/3 w-[600px] h-[600px] bg-emerald-500/[0.03] rounded-full blur-[150px]" />
@@ -50,7 +50,7 @@ export function Shell({
 
           <div className="flex items-center gap-4">
             {/* Nav tabs */}
-            <nav className="flex items-center bg-[#1e2028] rounded-xl border border-[#333444] p-1">
+            <nav className="flex items-center bg-[var(--card)] rounded-xl border border-[var(--border)] p-1">
               {NAV_ITEMS.map((item) => {
                 const active = pathname === item.href;
                 return (
@@ -90,8 +90,9 @@ export function Shell({
         {children}
 
         {/* Footer */}
-        <footer className="mt-10 pt-6 border-t border-[#333444]/40 flex items-center justify-between text-[11px] text-zinc-500">
+        <footer className="mt-10 pt-6 border-t border-[var(--border)]/40 flex items-center justify-between text-[11px] text-zinc-500">
           <span>PegSentinel · Uniswap V4 Hook · Built for UHI8 Hackathon</span>
+          <span className="font-mono">Arbitrum Sepolia</span>
         </footer>
       </div>
     </main>

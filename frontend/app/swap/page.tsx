@@ -30,11 +30,11 @@ export default function SwapPage() {
           <div className="space-y-4">
             {!ps.walletConnected ? (
               <button onClick={ps.connectWallet}
-                className="w-full py-3.5 rounded-xl font-semibold text-sm bg-gradient-to-r from-cyan-500 to-emerald-500 text-[#13141a] hover:from-cyan-400 hover:to-emerald-400 transition-all shadow-lg shadow-cyan-500/10">
+                className="w-full py-3.5 rounded-xl font-semibold text-sm bg-gradient-to-r from-cyan-500 to-emerald-500 text-[var(--bg)] hover:from-cyan-400 hover:to-emerald-400 transition-all shadow-lg shadow-cyan-500/10">
                 Connect Wallet
               </button>
             ) : (
-              <div className="text-xs text-zinc-500 font-mono bg-[#1a1b23] rounded-lg px-3 py-2 border border-[#333444]">
+              <div className="text-xs text-zinc-500 font-mono bg-[var(--inner)] rounded-lg px-3 py-2 border border-[var(--border)]">
                 Connected: {ps.walletAddress?.slice(0, 6)}…{ps.walletAddress?.slice(-4)}
               </div>
             )}
@@ -48,7 +48,7 @@ export default function SwapPage() {
                       className={`py-2.5 rounded-xl text-xs font-semibold transition-all border ${
                         ps.swapDirection === dir
                           ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-400"
-                          : "bg-[#1a1b23] border-[#333444] text-zinc-500 hover:border-zinc-600"
+                          : "bg-[var(--inner)] border-[var(--border)] text-zinc-500 hover:border-zinc-600"
                       }`}>
                       {dir === "0to1" ? `${ps.symbol0} → ${ps.symbol1}` : `${ps.symbol1} → ${ps.symbol0}`}
                     </button>
@@ -65,12 +65,12 @@ export default function SwapPage() {
                     value={ps.swapAmount}
                     onChange={(e) => ps.setSwapAmount(e.target.value)}
                     placeholder="0.0"
-                    className="w-full px-4 py-3.5 bg-[#1a1b23] border border-[#333444] rounded-xl text-lg font-mono text-zinc-100 placeholder-zinc-700 focus:outline-none focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 transition-all"
+                    className="w-full px-4 py-3.5 bg-[var(--inner)] border border-[var(--border)] rounded-xl text-lg font-mono text-zinc-100 placeholder-zinc-700 focus:outline-none focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 transition-all"
                   />
                 </div>
 
                 {/* Fee preview */}
-                <div className="bg-[#1a1b23] rounded-xl p-3.5 border border-[#333444] space-y-2">
+                <div className="bg-[var(--inner)] rounded-xl p-3.5 border border-[var(--border)] space-y-2">
                   <div className="flex justify-between text-xs">
                     <span className="text-zinc-500">Expected Fee</span>
                     <span className="font-mono text-zinc-200">
@@ -97,8 +97,8 @@ export default function SwapPage() {
                   disabled={ps.swapLoading || !ps.swapAmount}
                   className={`w-full py-3.5 rounded-xl font-semibold text-sm transition-all ${
                     ps.swapLoading || !ps.swapAmount
-                      ? "bg-[#1e2028] text-zinc-500 cursor-not-allowed border border-[#333444]"
-                      : "bg-gradient-to-r from-cyan-500 to-emerald-500 text-[#13141a] hover:from-cyan-400 hover:to-emerald-400 shadow-lg shadow-cyan-500/10"
+                      ? "bg-[var(--card)] text-zinc-500 cursor-not-allowed border border-[var(--border)]"
+                      : "bg-gradient-to-r from-cyan-500 to-emerald-500 text-[var(--bg)] hover:from-cyan-400 hover:to-emerald-400 shadow-lg shadow-cyan-500/10"
                   }`}
                 >
                   {ps.swapLoading ? "Swapping..." : "Execute Swap"}

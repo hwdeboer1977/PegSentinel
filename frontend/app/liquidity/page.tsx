@@ -37,7 +37,7 @@ export default function LiquidityPage() {
               { sym: ps.symbol0, bal: ps.balances.bal0, dec: ps.decimals0 },
               { sym: ps.symbol1, bal: ps.balances.bal1, dec: ps.decimals1 },
             ].map((t) => (
-              <div key={t.sym} className="flex items-center justify-between p-4 bg-[#1a1b23] rounded-xl border border-[#333444]">
+              <div key={t.sym} className="flex items-center justify-between p-4 bg-[var(--inner)] rounded-xl border border-[var(--border)]">
                 <div className="flex items-center gap-3">
                   <div className="w-8 h-8 rounded-full bg-gradient-to-br from-zinc-600 to-zinc-700 flex items-center justify-center text-[10px] font-bold text-zinc-200 border border-zinc-600">
                     {t.sym.charAt(0)}
@@ -77,7 +77,7 @@ export default function LiquidityPage() {
                     <div className="text-[10px] text-violet-400/70 uppercase tracking-wider mb-1.5">Token ID</div>
                     <div className="text-lg font-mono text-zinc-100">#{ps.lpPosition.tokenId}</div>
                   </div>
-                  <div className="p-4 rounded-xl bg-[#1a1b23] border border-[#333444]">
+                  <div className="p-4 rounded-xl bg-[var(--inner)] border border-[var(--border)]">
                     <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1.5">Liquidity</div>
                     <div className="text-lg font-mono text-zinc-100">{BigInt(ps.lpPosition.liquidity).toLocaleString()}</div>
                   </div>
@@ -91,7 +91,7 @@ export default function LiquidityPage() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-1 pt-3 border-t border-[#333444]/60">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-1 pt-3 border-t border-[var(--border)]/60">
                   <DataRow label="Tick Range" value={`${ps.lpPosition.tickLower} → ${ps.lpPosition.tickUpper}`} />
                   <DataRow label="Price Range" value={`$${tickToPrice(ps.lpPosition.tickLower).toFixed(4)} – $${tickToPrice(ps.lpPosition.tickUpper).toFixed(4)}`} />
                   <DataRow label="Owner" value={`${ps.lpPosition.owner.slice(0, 6)}…${ps.lpPosition.owner.slice(-4)}`} />
@@ -133,7 +133,7 @@ export default function LiquidityPage() {
                   <div className="text-[10px] text-amber-400/70 uppercase tracking-wider mb-1.5">Token ID</div>
                   <div className="text-lg font-mono text-zinc-100">#{ps.bufferPosition.tokenId}</div>
                 </div>
-                <div className="p-4 rounded-xl bg-[#1a1b23] border border-[#333444]">
+                <div className="p-4 rounded-xl bg-[var(--inner)] border border-[var(--border)]">
                   <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1.5">Liquidity</div>
                   <div className="text-lg font-mono text-zinc-100">{BigInt(ps.bufferPosition.liquidity).toLocaleString()}</div>
                 </div>
@@ -147,7 +147,7 @@ export default function LiquidityPage() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-1 pt-3 border-t border-[#333444]/60">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-1 pt-3 border-t border-[var(--border)]/60">
                 <DataRow label="Tick Range" value={`${ps.bufferPosition.tickLower} → ${ps.bufferPosition.tickUpper}`} />
                 <DataRow label="Price Range" value={`$${tickToPrice(ps.bufferPosition.tickLower).toFixed(4)} – $${tickToPrice(ps.bufferPosition.tickUpper).toFixed(4)}`} />
                 <DataRow label="Owner" value={`${ps.bufferPosition.owner.slice(0, 6)}…${ps.bufferPosition.owner.slice(-4)}`} />
@@ -193,7 +193,7 @@ export default function LiquidityPage() {
 
           {/* Current vs Target */}
           <div className="grid grid-cols-2 gap-3">
-            <div className="p-4 rounded-xl bg-[#1a1b23] border border-[#333444]">
+            <div className="p-4 rounded-xl bg-[var(--inner)] border border-[var(--border)]">
               <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-2">Current</div>
               <div className={`text-base font-semibold ${ps.regime === 0 ? "text-emerald-400" : "text-amber-400"}`}>
                 {ps.regimeName}
@@ -235,14 +235,14 @@ export default function LiquidityPage() {
                 Advanced Configuration
               </button>
               {ps.advancedOpen && (
-                <div className="mt-3 p-3.5 rounded-xl bg-[#1a1b23] border border-[#333444] space-y-3">
+                <div className="mt-3 p-3.5 rounded-xl bg-[var(--inner)] border border-[var(--border)] space-y-3">
                   <div className="grid grid-cols-2 gap-2">
-                    <div className={`p-2.5 rounded-lg border text-[11px] ${ps.regime === 0 ? "bg-emerald-500/[0.05] border-emerald-500/15" : "bg-[#1e2028] border-[#333444]"}`}>
+                    <div className={`p-2.5 rounded-lg border text-[11px] ${ps.regime === 0 ? "bg-emerald-500/[0.05] border-emerald-500/15" : "bg-[var(--card)] border-[var(--border)]"}`}>
                       <div className="font-medium text-emerald-400/70 mb-1">LP Range</div>
                       <div className="text-zinc-400 font-mono">{ps.rangeConfigs.lp.tickLower} → {ps.rangeConfigs.lp.tickUpper}</div>
                       <div className="text-zinc-500 font-mono">${tickToPrice(ps.rangeConfigs.lp.tickLower).toFixed(4)} – ${tickToPrice(ps.rangeConfigs.lp.tickUpper).toFixed(4)}</div>
                     </div>
-                    <div className={`p-2.5 rounded-lg border text-[11px] ${ps.bufferActive ? "bg-amber-500/[0.05] border-amber-500/15" : "bg-[#1e2028] border-[#333444]"}`}>
+                    <div className={`p-2.5 rounded-lg border text-[11px] ${ps.bufferActive ? "bg-amber-500/[0.05] border-amber-500/15" : "bg-[var(--card)] border-[var(--border)]"}`}>
                       <div className="font-medium text-amber-400/70 mb-1">Buffer Range</div>
                       <div className="text-zinc-400 font-mono">{ps.rangeConfigs.buffer.tickLower} → {ps.rangeConfigs.buffer.tickUpper}</div>
                       <div className="text-zinc-500 font-mono">${tickToPrice(ps.rangeConfigs.buffer.tickLower).toFixed(4)} – ${tickToPrice(ps.rangeConfigs.buffer.tickUpper).toFixed(4)}</div>
@@ -263,8 +263,8 @@ export default function LiquidityPage() {
               disabled={ps.rebalanceLoading || !ps.needsRebalance}
               className={`w-full py-3.5 rounded-xl font-semibold text-sm transition-all ${
                 ps.rebalanceLoading || !ps.needsRebalance
-                  ? "bg-[#1e2028] text-zinc-500 cursor-not-allowed border border-[#333444]"
-                  : "bg-gradient-to-r from-rose-500 to-amber-500 text-[#13141a] hover:from-rose-400 hover:to-amber-400 shadow-lg shadow-rose-500/10"
+                  ? "bg-[var(--card)] text-zinc-500 cursor-not-allowed border border-[var(--border)]"
+                  : "bg-gradient-to-r from-rose-500 to-amber-500 text-[var(--bg)] hover:from-rose-400 hover:to-amber-400 shadow-lg shadow-rose-500/10"
               }`}
             >
               {ps.rebalanceLoading ? "Updating…" : ps.needsRebalance
@@ -273,7 +273,7 @@ export default function LiquidityPage() {
             </button>
           ) : (
             <button onClick={ps.connectWallet}
-              className="w-full py-3.5 rounded-xl font-semibold text-sm bg-gradient-to-r from-violet-500 to-cyan-500 text-[#13141a] hover:from-violet-400 hover:to-cyan-400 transition-all shadow-lg shadow-violet-500/10">
+              className="w-full py-3.5 rounded-xl font-semibold text-sm bg-gradient-to-r from-violet-500 to-cyan-500 text-[var(--bg)] hover:from-violet-400 hover:to-cyan-400 transition-all shadow-lg shadow-violet-500/10">
               Connect Wallet to Rebalance
             </button>
           )}
@@ -287,7 +287,7 @@ export default function LiquidityPage() {
             </div>
           )}
 
-          <div className="text-[11px] text-zinc-500 pt-2 border-t border-[#333444]/60">
+          <div className="text-[11px] text-zinc-500 pt-2 border-t border-[var(--border)]/60">
             Regime updates via UI · Full liquidity repositioning requires the keeper script
           </div>
         </div>

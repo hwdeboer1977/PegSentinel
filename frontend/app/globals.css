@@ -1,15 +1,26 @@
 @import "tailwindcss";
 
+/* ============================================================
+   PegSentinel Theme — Hyperliquid-inspired
+   ============================================================ */
+:root {
+  --bg:       #0e1118;   /* deep navy-black background         */
+  --card:     #1e2330;   /* card surface - blue-tinted gray     */
+  --inner:    #141820;   /* recessed inputs, nested boxes       */
+  --border:   #2d3348;   /* blue-gray borders                   */
+  --text:     #e8eaf0;   /* cool white text                     */
+}
+
 @theme inline {
-  --color-background: #13141a;
-  --color-foreground: #e8e8ed;
+  --color-background: var(--bg);
+  --color-foreground: var(--text);
   --font-sans: 'Outfit', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
 }
 
 body {
-  background: #13141a;
-  color: #e8e8ed;
+  background: var(--bg);
+  color: var(--text);
   font-family: 'Outfit', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
 }

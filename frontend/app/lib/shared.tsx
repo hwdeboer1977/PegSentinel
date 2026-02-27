@@ -291,7 +291,7 @@ export function RegimeBadge({ regime, status }: { regime: Regime; status: Regime
 
 export function Card({ children, className = "" }: { children: ReactNode; className?: string }) {
   return (
-    <div className={`bg-[#1e2028] border border-[#333444] rounded-2xl p-6 ${className}`}>
+    <div className={`bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 ${className}`}>
       {children}
     </div>
   );
@@ -336,7 +336,7 @@ export function PegHero({
         <div className="flex justify-between text-[10px] text-zinc-500 font-mono mb-2">
           <span>$0.95</span><span className="text-zinc-500">$1.00</span><span>$1.05</span>
         </div>
-        <div className="relative h-1.5 bg-[#1e2028] rounded-full">
+        <div className="relative h-1.5 bg-[var(--card)] rounded-full">
           <div className="absolute left-1/2 -translate-x-1/2 -top-1 w-px h-3.5 bg-zinc-600" />
           <div className={`absolute top-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full ${dotColor} shadow-[0_0_10px] transition-all duration-700`}
             style={{ left: `calc(${gaugePos}% - 7px)` }} />
@@ -383,7 +383,7 @@ export function RangeViz({ currentTick, tickLower, tickUpper, regime }: {
           <span key={p} className={p === "$1.00" ? "text-zinc-400" : ""}>{p}</span>
         ))}
       </div>
-      <div className="relative h-10 bg-[#1a1b23] rounded-lg overflow-hidden">
+      <div className="relative h-10 bg-[var(--inner)] rounded-lg overflow-hidden">
         <div className="absolute left-1/2 top-0 bottom-0 w-px bg-zinc-600/50 -translate-x-1/2 z-10" />
         <div className={`absolute top-1.5 bottom-1.5 rounded-md border ${rc[regime]} transition-all duration-500`}
           style={{ left: `${lowerPos}%`, width: `${rangeWidth}%` }} />
