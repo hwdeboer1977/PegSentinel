@@ -42,8 +42,8 @@ function sleep(ms) {
 }
 
 function regimeName(n) {
-  if (n === 0) return "Normal";
-  if (n === 1) return "Defend";
+  if (Number(n) === 0) return "Normal";
+  if (Number(n) === 1) return "Defend";
   return `Unknown(${n})`;
 }
 
