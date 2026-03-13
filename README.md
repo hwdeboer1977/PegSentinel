@@ -1,27 +1,73 @@
 # PegSentinel
 
-**Peg-aware execution + treasury buffer defense for stablecoin pools on Uniswap V4**
-
-PegSentinel is a Uniswap V4 research prototype that explores **on-chain peg defense** using two tightly integrated layers:
-
-1. **Peg-aware swap execution (hook layer)** — dynamic directional fees
-2. **Treasury buffer defense (vault layer)** — accumulated fees deploy as buy wall during depeg
-
-The system is designed for **stablecoin pairs** (e.g. USDC/USDT) and focuses on how protocol-owned capital should be *strategically deployed* when a peg weakens.
+> **Peg-aware swap execution and treasury buffer defense for stablecoin pools on Uniswap V4**
 
 ---
 
-## High-Level Idea
+## What Is PegSentinel?
 
-Stablecoin depegs are not binary events — they evolve through stress phases. PegSentinel defends the peg using two layers:
+PegSentinel is a Uniswap V4 research prototype that defends stablecoin pegs using two coordinated on-chain layers:
 
-**Layer 1 — Dynamic Fees (always active):**
-Swaps away from peg pay higher fees (up to 10%). Swaps toward peg pay lower fees (down to 0.05%). This creates friction against depegging and incentivizes arbitrage.
+1. **Peg-aware swap execution (hook)** — directional dynamic fees applied to every swap, penalizing depeg pressure and rewarding arbitrage
+2. **Treasury buffer defense (vault)** — accumulated fees deploy as a single-sided buy wall below the LP range during stress events
 
-**Layer 2 — Treasury Buffer (deployed during stress):**
-The vault's LP position earns fees that accumulate in a treasury. When the peg weakens past a threshold, the treasury USDT deploys as a single-sided buy wall below the LP range. This absorbs sell pressure that would otherwise crash through undefended price space.
+The system is purpose-built for **stablecoin pairs** (e.g. USDC/USDT).
 
-The key insight: **don't move LP — use accumulated fees as strategic capital.**
+The core insight: **don't move the LP position — use accumulated fees as strategic defensive capital.**
+
+---
+
+## How It Works
+
+Stablecoin depegs are not binary events — they unfold progressively. PegSentinel models this explicitly with two always-active defense layers:
+
+**Layer 1 — Dynamic Fees (PegSentinelHook)**
+
+Every swap is assessed relative to the $1.00 peg. The fee adjusts in real time:
+
+| Swap Direction | Fee |
+|---|---|
+| Away from peg | Up to **10%** |
+| At peg (±0.25%) | **0.3%** (base fee) |
+| Toward peg | As low as **0.05%** |
+
+The penalty slope is 8× steeper in the harmful direction. This creates continuous friction against depegging and incentivizes arbitrage at all times.
+
+**Layer 2 — Treasury Buffer (PegSentinelVault V2)**
+
+The vault's LP position earns fees that accumulate in a protocol treasury. When the peg weakens past a configured tick threshold, treasury USDT deploys as a **single-sided buy wall** below the LP range. This absorbs sell pressure that would otherwise crash through undefended price space — and profits when the peg restores.
+
+---
+
+## Defense Playbook
+
+```
+Phase 1 — EARN (Normal regime)
+  LP at [-60, +60] earns fees from every swap
+  Keeper calls collectFees() periodically → treasury grows
+
+Phase 2 — DEFEND (tick drops below -50)
+  autoRebalance() deploys treasury USDT as buffer at [-240, -60]
+  Dynamic fees spike on away-from-peg swaps
+  Two-layer defense: fee friction + buffer buy wall
+
+Phase 3 — ABSORB
+  Buffer absorbs sell pressure below the LP range
+  Buffer is buying USDC at ~$0.98 discount
+
+Phase 4 — RECOVER (tick rises above -30)
+  autoRebalance() removes buffer
+  Price snaps back through now-empty zone to LP range
+  Dynamic fees drop to encourage buying
+
+Phase 5 — PROFIT
+  Treasury holds USDC bought at discount → profit on peg restore
+  Enhanced dynamic fees earned during stress → additional revenue
+```
+
+**Key asymmetry:** hard to push down (thick buffer + high fees) → easy to recover (thin zone + low fees)
+
+**Flywheel:** volatility → higher fees → bigger treasury → stronger buffer next time
 
 ---
 
@@ -34,199 +80,117 @@ Trader
 Uniswap V4 Pool
   │
   ├─▶ PegSentinelHook (execution layer)
-  │     - observes price vs peg
-  │     - applies directional dynamic fees
-  │     - fees flow to LP → vault collects into treasury
+  │     · intercepts every swap via beforeSwap
+  │     · applies directional dynamic fees
+  │     · fees flow to LP → vault collects into treasury
   │
-  └─▶ PegSentinelVault (defense layer)
-        - owns LP NFT at peg [-60, +60] — never moves
-        - collects fees into treasury
-        - deploys treasury USDT as buffer [-240, -60] during depeg
-        - removes buffer on recovery — profits from buying USDC at discount
-```
+  └─▶ PegSentinelVault V2 (defense layer)
+        · owns LP NFT at [-60, +60] — never moves
+        · collects swap fees into treasury
+        · deploys treasury USDT as buffer at [-240, -60] during depeg
+        · removes buffer on recovery, profiting from discount USDC
 
----
+Keeper (backend)
+  │
+  └─▶ polls needsRebalance() every N seconds
+        · calls collectFees() on schedule
+        · calls autoRebalance() when regime change detected
 
-## Core Components
-
-### 1. PegSentinelHook (execution layer)
-
-Responsibilities:
-- Observe pool price relative to $1.00 peg
-- Apply **directional dynamic fees** via `beforeSwap`
-  - Swaps *away* from peg → higher fee (up to 10%)
-  - Swaps *toward* peg → lower fee (down to 0.05%)
-  - Asymmetric slopes: 8x stronger penalty for harmful trades
-
-This layer affects **all swaps** in the pool, creating continuous fee-based peg defense.
-
----
-
-### 2. PegSentinelVault V2 (defense layer)
-
-The vault is protocol-owned, non-ERC4626, with no user deposits or share accounting.
-
-**Two positions:**
-- **LP Position** — two-sided at `[-60, +60]`, earns fees, **never moves**
-- **Buffer Position** — single-sided USDT at `[-240, -60]`, deployed only during depeg
-
-**Treasury:**
-- Fees collected from LP position accumulate as USDC + USDT
-- Treasury USDT funds the buffer during defense
-- Treasury profits when buffer buys USDC at discount during depeg
-
----
-
-## Defense Playbook
-
-```
-Phase 1 — EARN (Normal)
-  LP at [-60, +60] earns fees from every swap
-  Keeper calls collectFees() → treasury grows
-
-Phase 2 — DEFEND (tick drops below -50)
-  autoRebalance() deploys treasury USDT as buffer at [-240, -60]
-  Dynamic fees spike on away-from-peg swaps
-  Two-layer defense: fee friction + buffer buy wall
-
-Phase 3 — ABSORB
-  Buffer absorbs sell pressure that would crash through empty price space
-  Buffer is buying USDC at discount (~$0.98)
-
-Phase 4 — RECOVER (tick rises above -30)
-  autoRebalance() removes buffer
-  Price snaps back through empty zone to LP range
-  Dynamic fees drop to encourage buying
-
-Phase 5 — PROFIT
-  Treasury holds USDC bought at discount → profit on peg restore
-  Enhanced dynamic fees earned during stress → additional revenue
-```
-
-### Key Asymmetry
-
-Hard to push down (thick buffer + high fees) → Easy to recover (thin zone + low fees)
-
-### Flywheel
-
-```
-Volatility → higher dynamic fees → bigger treasury → stronger buffer next time
+Dashboard (frontend)
+  └─▶ read-only monitor + manual rebalance trigger
+        · live price, tick, deviation
+        · fee preview for both swap directions
+        · vault reserves and LP position details
 ```
 
 ---
 
 ## Regime Model
 
-PegSentinel V2 uses two regimes with hysteresis to prevent oscillation:
+Two regimes with hysteresis prevent oscillation:
 
-| Regime  | Condition              | Action                              |
-|---------|------------------------|-------------------------------------|
-| Normal  | `tick >= -30`          | LP only, treasury accumulates       |
-| Defend  | `tick <= -50`          | LP + buffer deployed from treasury  |
+| Regime | Trigger | Vault State |
+|---|---|---|
+| `Normal` | `tick >= -30` | LP only, treasury accumulates |
+| `Defend` | `tick <= -50` | LP + buffer deployed from treasury |
 
-The gap between -50 and -30 is the hysteresis zone — no regime change occurs here, preventing rapid deploy/remove cycles.
+The gap between `-50` and `-30` is the hysteresis zone — no regime transition fires here, preventing rapid deploy/remove cycles.
 
 ---
 
-## LP Position Model
+## PegSentinel vs Classic LP
 
-The vault tracks two LP NFTs:
+| | Classic LP | PegSentinel |
+|---|---|---|
+| LP at peg | Static | Static — never moves |
+| Fee destination | Compounds back to LP | Accumulates in treasury |
+| Below LP range | No defense | Buffer buy wall |
+| Dynamic fees | None | 0.05% – 10% directional |
+| Recovery | Passive | Asymmetric snap-back |
+| Treasury P&L | None | Profits from buying the dip |
 
-```solidity
-struct PositionMeta {
-    uint256 tokenId;
-    int24 tickLower;
-    int24 tickUpper;
-    bytes32 salt;
-    uint128 liquidity;
-    bool active;
-}
+---
+
+## Repository Structure
+
+```
+PegSentinel/
+├── v4_hook/          # Solidity contracts + Foundry deployment pipeline
+│   ├── src/
+│   │   ├── PegSentinelHook.sol    # Dynamic fee hook
+│   │   └── PegSentinelVault.sol  # Treasury + buffer vault
+│   └── script/                   # Numbered deployment scripts (00–06)
+│
+├── backend/          # Node.js keeper — monitors vault, triggers rebalancing
+│   └── src/
+│       ├── index.js  # Main keeper loop
+│       ├── config.js # Environment config
+│       └── math.js   # Tick/price helpers
+│
+└── frontend/         # Next.js dashboard — live monitoring + manual control
+    └── app/
+        ├── page.tsx           # Overview
+        ├── swap/page.tsx      # Swap interface + fee preview
+        └── liquidity/page.tsx # Vault state + rebalance control
 ```
 
-- **lpPosition** — always active, always at `[-60, +60]`
-- **bufferPosition** — active only during Defend regime, at `[-240, -60]`
+---
+
+## Quickstart
+
+### 1. Deploy Contracts
+
+See [`v4_hook/README.md`](./v4_hook/README.md) for the full Foundry deployment pipeline (mock tokens → hook → pool → vault → fund → mint LP).
+
+### 2. Run the Keeper
+
+See [`backend/README.md`](./backend/README.md) for keeper setup. The keeper monitors the vault and calls `collectFees()` and `autoRebalance()` automatically.
+
+### 3. Open the Dashboard
+
+See [`frontend/README.md`](./frontend/README.md) for the Next.js dashboard. Point it at your deployed contracts to monitor live state.
 
 ---
 
-## Lifecycle
+## Tech Stack
 
-### 1. Deploy Vault
-- Token addresses set
-- LP range `[-60, +60]` and buffer range `[-240, -60]` configured
-- Defend/recover thresholds set with hysteresis
-
-### 2. Fund & Mint LP
-- Protocol treasury sends USDC + USDT to vault
-- LP NFT minted at `[-60, +60]`, owned by vault
-- Registered via `setLPPosition()`
-
-### 3. Earn Fees
-- LP earns fees from every swap in the pool
-- Keeper calls `collectFees()` periodically
-- Fees accumulate in vault as treasury
-
-### 4. Defend Peg
-- Tick drops below defend threshold
-- Keeper calls `autoRebalance()`
-- Treasury USDT deploys as buffer at `[-240, -60]`
-- Buffer acts as buy wall absorbing sell pressure
-
-### 5. Recover
-- Tick rises above recover threshold
-- Keeper calls `autoRebalance()`
-- Buffer removed, tokens return to treasury
-- Treasury profits from USDC bought at discount
+| Layer | Stack |
+|---|---|
+| Contracts | Solidity 0.8.30, Foundry, Uniswap V4, OpenZeppelin |
+| Keeper | Node.js, ethers.js v6, dotenv |
+| Frontend | Next.js 16, React 19, TypeScript, Tailwind CSS v4, ethers.js v6 |
+| Network | Arbitrum Sepolia (chain ID 421614) |
 
 ---
 
-## Comparison: Classic LP vs PegSentinel
+## Disclaimer
 
-| Metric                     | Classic LP        | PegSentinel                    |
-|---------------------------|-------------------|--------------------------------|
-| LP at peg                 | Same $10M         | Same $10M                      |
-| Fees earned               | To LP (compound)  | To treasury (strategic deploy) |
-| Below LP range            | Zero defense      | Buffer buy wall                |
-| Dynamic fees              | None              | Up to 10% away-from-peg       |
-| Recovery                  | Passive           | Asymmetric (easy snap-back)    |
-| Treasury P&L              | None              | Profits from buying dip        |
+> ⚠️ **Research prototype — not production-ready.**
+>
+> PegSentinel has not been audited. It is intended for experimentation and design exploration around on-chain peg defense mechanisms. Do not deploy with real assets.
 
 ---
 
-## What Exists Today
+## License
 
-✅ Dynamic peg-aware fees (hook)  
-✅ Vault-owned LP at peg (never moves)  
-✅ Fee collection into treasury  
-✅ Buffer deploy/remove with hysteresis  
-✅ Force override for emergencies  
-✅ Pause/unpause and rescue functions  
-✅ Full Foundry script pipeline  
-✅ Anvil and testnet tested  
-
----
-
-## What's Next (Planned)
-
-- TWAP oracle for manipulation resistance
-- Keeper automation (Chainlink/Gelato)
-- Hook-driven automatic regime signals
-- Multi-pool support
-- Risk caps per regime
-- Simulation and stress testing
-- Cross-chain deployment
-
----
-
-## Status
-
-⚠️ **Research / Prototype**
-
-- Not audited
-- Not production-ready
-- Intended for experimentation and design exploration
-
----
-
-## One-liner
-
-> **PegSentinel defends stablecoin pegs using dynamic fees and treasury-funded buffer walls that profit from buying the dip.**
+MIT
