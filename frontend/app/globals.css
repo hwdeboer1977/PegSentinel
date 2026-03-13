@@ -1,26 +1,99 @@
 @import "tailwindcss";
 
 /* ============================================================
-   PegSentinel Theme — Hyperliquid-inspired
+   PegSentinel — globals.css
+   All readability improvements in one file. No page changes.
    ============================================================ */
-:root {
-  --bg:       #0e1118;   /* deep navy-black background         */
-  --card:     #1e2330;   /* card surface - blue-tinted gray     */
-  --inner:    #141820;   /* recessed inputs, nested boxes       */
-  --border:   #2d3348;   /* blue-gray borders                   */
-  --text:     #e8eaf0;   /* cool white text                     */
-}
 
 @theme inline {
-  --color-background: var(--bg);
-  --color-foreground: var(--text);
   --font-sans: 'Outfit', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
+
+  --color-background: #111827;
+  --color-foreground: #f1f5f9;
+
+  /* ── Remap zinc palette — lift 2 steps for dark bg readability ──
+     zinc-500 was #71717a (~3.5:1 contrast) — now maps to slate-400
+     (#94a3b8, ~5:1). Every text-zinc-* in every file benefits.   */
+  --color-zinc-50:  #fafafa;
+  --color-zinc-100: #f4f4f5;
+  --color-zinc-200: #e4e4e7;
+  --color-zinc-300: #d4d4d8;
+  --color-zinc-400: #cbd5e1;  /* slate-300 — clear labels              */
+  --color-zinc-500: #94a3b8;  /* slate-400 — readable secondary text   */
+  --color-zinc-600: #64748b;  /* slate-500 — dimmer but visible        */
+  --color-zinc-700: #334155;  /* borders                               */
+  --color-zinc-800: #1e293b;  /* card backgrounds                      */
+  --color-zinc-900: #0f172a;  /* deep backgrounds                      */
+
+  /* ── Lift emerald/amber/rose — /70 opacity variants too dim ── */
+  --color-emerald-400: rgb(52 211 153);
+  --color-amber-400:   rgb(251 191 36);
+  --color-rose-400:    rgb(251 113 133);
+  --color-cyan-400:    rgb(34 211 238);
+  --color-violet-400:  rgb(167 139 250);
 }
+
+/* ── CSS vars used directly in JSX ──────────────────────────── */
+:root {
+  --bg:     #0f172a;   /* slate-900 — deep page background             */
+  --card:   #1e293b;   /* slate-800 — clear card surface               */
+  --inner:  #0f1f35;   /* darker recessed inputs                       */
+  --border: #334155;   /* slate-700 — always-visible borders           */
+  --text:   #f1f5f9;
+}
+
+/* ── Base ────────────────────────────────────────────────────── */
+html { font-size: 16px; }
 
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: 'Outfit', system-ui, sans-serif;
+  line-height: 1.6;
   -webkit-font-smoothing: antialiased;
+}
+
+/* ── Paragraph body copy ─────────────────────────────────────── */
+p {
+  font-size: 0.9375rem; /* 15px */
+  line-height: 1.7;
+}
+
+/* ── Font size floor — arbitrary sizes bypass theme remapping ── */
+[class*="text-[10px]"],
+[class*="text-[11px]"] { font-size: 0.875rem; } /* 14px — text-sm     */
+
+/* ── Font weight ─────────────────────────────────────────────── */
+.font-light { font-weight: 400; }
+
+/* ── Monospace ───────────────────────────────────────────────── */
+.font-mono {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/* ── Section labels (SectionLabel component) ─────────────────── */
+/* Uses text-[11px] + uppercase tracking + passed color prop.
+   The arbitrary size bypasses @theme — override here.
+   Also boost emerald-400/70 which is passed as the color prop.  */
+[class*="tracking-[0.14em]"] {
+  font-size: 0.75rem;       /* 12px — keeps proportions but readable   */
+  letter-spacing: 0.1em;
+  opacity: 1 !important;    /* kill any /70 opacity                    */
+}
+
+/* ── Opacity washes — strip from accent text ─────────────────── */
+/* /70, /60 on colored text is too dim on dark backgrounds        */
+[class*="text-emerald-400/"],
+[class*="text-cyan-400/"],
+[class*="text-violet-400/"],
+[class*="text-amber-400/"],
+[class*="text-rose-400/"] {
+  opacity: 1 !important;
+}
+
+/* ── Layout — use full screen width ─────────────────────────── */
+/* Shell uses max-w-6xl (1152px) — extend to fill wider screens  */
+.max-w-6xl {
+  max-width: min(1440px, 95vw);
 }

@@ -29,55 +29,60 @@ export function Shell({
         <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,.008)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.008)_1px,transparent_1px)] bg-[size:72px_72px]" />
       </div>
 
-      <div className="max-w-6xl mx-auto px-6 py-6">
-        {/* Header */}
-        <header className="flex items-center justify-between mb-6">
+      {/* Top header — logo + live indicator */}
+      <header className="border-b border-[var(--border)] bg-[var(--card)]/60 backdrop-blur-sm">
+        <div className="max-w-[1280px] mx-auto px-6 h-14 flex items-center justify-between">
           <Link href="/" className="flex items-center gap-3 group">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-500/20 to-cyan-500/10 border border-emerald-500/20 flex items-center justify-center group-hover:border-emerald-500/40 transition-colors">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-400">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-500/20 to-cyan-500/10 border border-emerald-500/20 flex items-center justify-center group-hover:border-emerald-500/40 transition-colors">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-400">
                 <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
               </svg>
             </div>
             <div>
-              <h1 className="text-xl font-semibold tracking-tight" style={{ fontFamily: "'Outfit', sans-serif" }}>
+              <h1 className="text-base font-semibold tracking-tight leading-none" style={{ fontFamily: "'Outfit', sans-serif" }}>
                 Peg<span className="text-emerald-400">Sentinel</span>
               </h1>
-              <p className="text-[10px] text-zinc-500 tracking-wide">
+              <p className="text-xs text-zinc-500 tracking-wide mt-0.5">
                 Uniswap V4 Hook · Stablecoin Peg Defense
               </p>
             </div>
           </Link>
 
-          <div className="flex items-center gap-4">
-            {/* Nav tabs */}
-            <nav className="flex items-center bg-[var(--card)] rounded-xl border border-[var(--border)] p-1">
-              {NAV_ITEMS.map((item) => {
-                const active = pathname === item.href;
-                return (
-                  <Link
-                    key={item.href}
-                    href={item.href}
-                    className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-medium transition-all ${
-                      active
-                        ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
-                        : "text-zinc-500 hover:text-zinc-300 border border-transparent"
-                    }`}
-                  >
-                    <span className="text-sm">{item.icon}</span>
-                    {item.label}
-                  </Link>
-                );
-              })}
-            </nav>
-
-            {/* Status */}
-            <div className="flex items-center gap-2">
-              <div className={`w-1.5 h-1.5 rounded-full ${loading ? "bg-amber-400" : "bg-emerald-400"} animate-pulse`} />
-              <span className="text-[11px] text-zinc-500">{loading ? "Syncing..." : "Live"}</span>
-            </div>
+          {/* Live status */}
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-[var(--inner)] rounded-full border border-[var(--border)]">
+            <div className={`w-1.5 h-1.5 rounded-full ${loading ? "bg-amber-400" : "bg-emerald-400"} animate-pulse`} />
+            <span className="text-xs text-zinc-400">{loading ? "Syncing..." : "Live"}</span>
+            <span className="text-xs text-zinc-600">·</span>
+            <span className="text-xs text-zinc-500 font-mono">Arbitrum Sepolia</span>
           </div>
-        </header>
+        </div>
+      </header>
 
+      {/* Nav row — full width tabs below header */}
+      <nav className="border-b border-[var(--border)] bg-[var(--card)]/40">
+        <div className="max-w-[1280px] mx-auto px-6 flex gap-0">
+          {NAV_ITEMS.map((item) => {
+            const active = pathname === item.href;
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={`flex items-center gap-2 px-5 py-3.5 text-sm font-medium border-b-2 transition-all ${
+                  active
+                    ? "border-emerald-400 text-emerald-400"
+                    : "border-transparent text-zinc-500 hover:text-zinc-200 hover:border-zinc-600"
+                }`}
+              >
+                <span>{item.icon}</span>
+                {item.label}
+              </Link>
+            );
+          })}
+        </div>
+      </nav>
+
+      {/* Page content */}
+      <div className="max-w-[1280px] mx-auto px-6 py-6">
         {/* Error */}
         {error && (
           <div className="mb-6 p-4 rounded-xl bg-red-500/[0.06] border border-red-500/20">
@@ -86,11 +91,10 @@ export function Shell({
           </div>
         )}
 
-        {/* Page content */}
         {children}
 
         {/* Footer */}
-        <footer className="mt-10 pt-6 border-t border-[var(--border)]/40 flex items-center justify-between text-[11px] text-zinc-500">
+        <footer className="mt-10 pt-6 border-t border-[var(--border)]/40 flex items-center justify-between text-xs text-zinc-600">
           <span>PegSentinel · Uniswap V4 Hook · Built for UHI8 Hackathon</span>
           <span className="font-mono">Arbitrum Sepolia</span>
         </footer>
