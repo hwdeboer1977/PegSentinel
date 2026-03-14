@@ -35,8 +35,8 @@ contract MintFullRangePosition is Script, BaseScript, LiquidityHelpers {
     function run() external {
         // ---- env ----
         uint256 pk = uint256(vm.envBytes32("PRIVATE_KEY"));
-        uint256 amount0 = vm.envOr("AMOUNT0", uint256(1000e6)); // Default 1,000 USDT
-        uint256 amount1 = vm.envOr("AMOUNT1", uint256(1000e6)); // Default 1,000 USDC
+        uint256 amount0 = vm.envOr("AMOUNTBS0", uint256(1000e6));
+        uint256 amount1 = vm.envOr("AMOUNTBS1", uint256(1000e6));
 
         // ---- pool key ----
         PoolKey memory poolKey = PoolKey({
