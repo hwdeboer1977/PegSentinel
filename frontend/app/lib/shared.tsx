@@ -345,16 +345,25 @@ export function PegHero({
   );
 }
 
-export function FeeCard({ fee, toward, symbol0, symbol1, zeroForOne }: {
-  fee: number; toward: boolean; symbol0: string; symbol1: string; zeroForOne: boolean;
+export function FeeCard({ fee, toward, symbol0, symbol1, zeroForOne, deviationBps }: {
+  fee: number; toward: boolean; symbol0: string; symbol1: string; zeroForOne: boolean; deviationBps: number;
 }) {
   const dir = zeroForOne ? `${symbol0} → ${symbol1}` : `${symbol1} → ${symbol0}`;
+  const atPeg = Math.abs(deviationBps) < 25;
+  const label = atPeg ? "AT PEG" : toward ? "TOWARD PEG" : "AWAY FROM PEG";
+  const labelColor = atPeg ? "text-emerald-400" : toward ? "text-emerald-400" : "text-rose-400";
+  const cardStyle = atPeg
+    ? "bg-emerald-500/[0.04] border-emerald-500/20"
+    : toward
+    ? "bg-emerald-500/[0.04] border-emerald-500/20"
+    : "bg-rose-500/[0.04] border-rose-500/20";
+
   return (
-    <div className={`p-4 rounded-xl border ${toward ? "bg-emerald-500/[0.04] border-emerald-500/20" : "bg-rose-500/[0.04] border-rose-500/20"}`}>
+    <div className={`p-4 rounded-xl border ${cardStyle}`}>
       <div className="flex items-center justify-between mb-3">
         <span className="text-xs text-zinc-400 font-mono">{dir}</span>
-        <span className={`text-[10px] font-semibold uppercase tracking-wider ${toward ? "text-emerald-400" : "text-rose-400"}`}>
-          {toward ? "TOWARD PEG" : "AWAY FROM PEG"}
+        <span className={`text-[10px] font-semibold uppercase tracking-wider ${labelColor}`}>
+          {label}
         </span>
       </div>
       <span className="text-3xl font-mono font-light text-zinc-100">{formatFee(fee)}</span>

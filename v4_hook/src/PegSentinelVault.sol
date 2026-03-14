@@ -19,6 +19,7 @@ import {LiquidityAmounts} from "v4-periphery/src/libraries/LiquidityAmounts.sol"
 import {IHooks} from "v4-core/src/interfaces/IHooks.sol";
 import {Actions} from "v4-periphery/src/libraries/Actions.sol";
 import {IAllowanceTransfer} from "permit2/src/interfaces/IAllowanceTransfer.sol";
+import {console2} from "forge-std/console2.sol";
 
 /// @title PegSentinelVault v2 — Treasury Buffer Model
 /// @notice Protocol-owned vault for stablecoin peg defense
@@ -512,28 +513,41 @@ contract PegSentinelVault is Ownable, Pausable, ReentrancyGuard {
     function _deployBuffer() internal {
         if (bufferPosition.active) revert BufferAlreadyActive();
 
-        // Use all available USDT in treasury as buffer
-        // token1 = USDT (the strong token we deploy as defense)
         uint256 usdtAvailable = token1.balanceOf(address(this));
+        console2.log("[_deployBuffer] usdtAvailable:", usdtAvailable);
         if (usdtAvailable == 0) revert InsufficientTreasuryUSDT(0, 1);
 
-        // Buffer is single-sided USDT below current price
-        _approveTokens(0, usdtAvailable);
+        // Approve both tokens — when tick is inside buffer range, Uniswap needs
+        // a small amount of token0 too (two-sided). We use vault's USDC balance.
+        uint256 usdcAvailable = token0.balanceOf(address(this));
+        _approveTokens(usdcAvailable, usdtAvailable);
+
+        int24 currentTick = getCurrentTick();
+        console2.log("[_deployBuffer] currentTick:", int256(currentTick));
+        console2.log("[_deployBuffer] bufferRange.tickLower:", int256(bufferRange.tickLower));
+        console2.log("[_deployBuffer] bufferRange.tickUpper:", int256(bufferRange.tickUpper));
 
         uint128 liquidity = _calculateLiquidity(
             bufferRange.tickLower,
             bufferRange.tickUpper,
-            0,              // no USDC
-            usdtAvailable   // all USDT
+            usdcAvailable,
+            usdtAvailable
         );
+        console2.log("[_deployBuffer] liquidity:", uint256(liquidity));
+
+        if (liquidity == 0) {
+            console2.log("[_deployBuffer] ERROR: liquidity=0, will revert CannotUpdateEmptyPosition");
+            revert InsufficientTreasuryUSDT(usdtAvailable, 0);
+        }
 
         uint256 tokenId = _mintNewPosition(
             bufferRange.tickLower,
             bufferRange.tickUpper,
             liquidity,
-            0,
-            usdtAvailable
+            type(uint256).max,  // allow vault USDC to cover token0 when tick inside range
+            type(uint256).max   // allow full USDT
         );
+        console2.log("[_deployBuffer] minted tokenId:", tokenId);
 
         bufferPosition = PositionMeta({
             tokenId: tokenId,
@@ -626,19 +640,38 @@ contract PegSentinelVault is Ownable, Pausable, ReentrancyGuard {
         int24 tickUpper,
         uint256 amount0,
         uint256 amount1
-    ) internal view returns (uint128) {
+    ) internal view returns (uint128 liq) {
+        console2.log("[_calculateLiquidity] amount0:", amount0);
+        console2.log("[_calculateLiquidity] amount1:", amount1);
         int24 currentTick = getCurrentTick();
-        uint160 sqrtPriceX96 = TickMath.getSqrtPriceAtTick(currentTick);
         uint160 sqrtPriceLowerX96 = TickMath.getSqrtPriceAtTick(tickLower);
         uint160 sqrtPriceUpperX96 = TickMath.getSqrtPriceAtTick(tickUpper);
 
-        return LiquidityAmounts.getLiquidityForAmounts(
+        // Clamp reference price to range boundaries to get correct single-sided liquidity.
+        // When entirely below current price (tickUpper < currentTick): pure token1.
+        // When entirely above current price (tickLower > currentTick): pure token0.
+        // When inside range: use real price — getLiquidityForAmounts handles mixed amounts.
+        uint160 sqrtPriceX96;
+        if (currentTick >= tickUpper) {
+            sqrtPriceX96 = sqrtPriceUpperX96;
+        } else if (currentTick <= tickLower) {
+            sqrtPriceX96 = sqrtPriceLowerX96;
+        } else {
+            sqrtPriceX96 = TickMath.getSqrtPriceAtTick(currentTick);
+        }
+
+        console2.log("[_calculateLiquidity] currentTick:", int256(currentTick));
+        console2.log("[_calculateLiquidity] sqrtPriceX96:", uint256(sqrtPriceX96));
+
+        liq = LiquidityAmounts.getLiquidityForAmounts(
             sqrtPriceX96,
             sqrtPriceLowerX96,
             sqrtPriceUpperX96,
             amount0,
             amount1
         );
+        console2.log("[_calculateLiquidity] result liq:", uint256(liq));
+        return liq;
     }
 
     function _mintNewPosition(

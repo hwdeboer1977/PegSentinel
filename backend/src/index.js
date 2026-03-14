@@ -137,7 +137,7 @@ async function main() {
           `⚡ Rebalance needed: ${regimeName(currentRegime)} → ${regimeName(targetRegime)}`
         );
 
-        if (targetRegime === 1) {
+        if (Number(targetRegime) === 1) {
           console.log(
             `   Action: DEPLOY buffer (treasury USDT → LP at buffer range)`
           );
@@ -168,6 +168,23 @@ async function main() {
             console.log(
               `Gas price: ${gasPriceGwei.toFixed(1)} gwei. Executing...`
             );
+
+            // --- Debug: verify vault state right before TX ---
+            try {
+              const [vBal0, vBal1] = await vaultRead.balances();
+              const activeRegimeOnChain = await vaultRead.activeRegime();
+              const bufRange = await vaultRead.bufferRange();
+              console.log(`   [debug] vault address : ${vault.target}`);
+              console.log(`   [debug] token0 bal    : ${formatUsdc(vBal0)}`);
+              console.log(`   [debug] token1 bal    : ${formatUsdc(vBal1)}`);
+              console.log(`   [debug] activeRegime  : ${Number(activeRegimeOnChain)} (${regimeName(activeRegimeOnChain)})`);
+              console.log(`   [debug] bufferRange   : [${bufRange.tickLower}, ${bufRange.tickUpper}]`);
+              const [nr2, cur2, tgt2, tick2] = await vaultRead.needsRebalance();
+              console.log(`   [debug] needsRebalance: ${nr2} cur=${Number(cur2)} tgt=${Number(tgt2)} tick=${Number(tick2)}`);
+            } catch (dbgErr) {
+              console.log(`   [debug] state read error: ${dbgErr.message}`);
+            }
+            // -------------------------------------------------
 
             try {
               const tx = await vault.autoRebalance();
@@ -202,19 +219,32 @@ async function main() {
                 } catch {}
               }
             } catch (txError) {
-              const reason =
-                txError?.reason || txError?.message || "Unknown error";
+              const reason = txError?.reason || txError?.message || "Unknown error";
+              const data = txError?.data || txError?.error?.data || "";
+              const selector = typeof data === "string" ? data.slice(0, 10) : "";
 
-              if (reason.includes("CooldownActive")) {
+              console.error(`❌ TX failed selector: ${selector}`);
+              console.error(`❌ TX failed reason  : ${reason}`);
+
+              // Decode known selectors
+              const knownErrors = {
+                "0x2a7e8897": "CooldownActive",
+                "0x1ebdffe6": "NoRegimeChange",
+                "0x0c27753d": "BufferAlreadyActive",
+                "0x1075a9a1": "BufferNotActive",
+                "0x31e30ad0": "InsufficientTreasuryUSDT",
+              };
+              const decoded = knownErrors[selector];
+              if (decoded) console.error(`❌ Decoded: ${decoded}`);
+
+              if (reason.includes("CooldownActive") || decoded === "CooldownActive") {
                 console.log(`⏳ Cooldown active. Waiting...`);
-              } else if (reason.includes("NoRegimeChange")) {
+              } else if (reason.includes("NoRegimeChange") || decoded === "NoRegimeChange") {
                 console.log(`ℹ️  No regime change needed (race condition)`);
-              } else if (reason.includes("InsufficientTreasuryUSDT")) {
-                console.log(`⚠️  No USDT in treasury for buffer deployment`);
-              } else if (reason.includes("BufferAlreadyActive")) {
+              } else if (reason.includes("InsufficientTreasuryUSDT") || decoded === "InsufficientTreasuryUSDT") {
+                console.log(`⚠️  InsufficientTreasuryUSDT — token1 balance is 0 inside vault`);
+              } else if (reason.includes("BufferAlreadyActive") || decoded === "BufferAlreadyActive") {
                 console.log(`ℹ️  Buffer already deployed`);
-              } else {
-                console.error(`❌ TX failed: ${reason}`);
               }
             }
           }

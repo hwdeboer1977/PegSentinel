@@ -82,11 +82,15 @@ export default function SwapPage() {
                   <div className="flex justify-between text-xs">
                     <span className="text-zinc-500">Direction</span>
                     <span className={`font-medium ${
-                      (ps.swapDirection === "0to1" ? ps.fee0to1?.toward : ps.fee1to0?.toward)
-                        ? "text-emerald-400" : "text-amber-400"
+                      Math.abs(ps.deviationBps) < 25
+                        ? "text-emerald-400"
+                        : (ps.swapDirection === "0to1" ? ps.fee0to1?.toward : ps.fee1to0?.toward)
+                          ? "text-emerald-400" : "text-amber-400"
                     }`}>
-                      {(ps.swapDirection === "0to1" ? ps.fee0to1?.toward : ps.fee1to0?.toward)
-                        ? "TOWARD PEG" : "AWAY FROM PEG"}
+                      {Math.abs(ps.deviationBps) < 25
+                        ? "AT PEG"
+                        : (ps.swapDirection === "0to1" ? ps.fee0to1?.toward : ps.fee1to0?.toward)
+                          ? "TOWARD PEG" : "AWAY FROM PEG"}
                     </span>
                   </div>
                 </div>
@@ -127,8 +131,8 @@ export default function SwapPage() {
             <SectionLabel color="text-cyan-400/70">Layer 1 · Dynamic Fees</SectionLabel>
             {ps.fee0to1 && ps.fee1to0 ? (
               <div className="space-y-3">
-                <FeeCard fee={ps.fee0to1.fee} toward={ps.fee0to1.toward} symbol0={ps.symbol0} symbol1={ps.symbol1} zeroForOne={true} />
-                <FeeCard fee={ps.fee1to0.fee} toward={ps.fee1to0.toward} symbol0={ps.symbol0} symbol1={ps.symbol1} zeroForOne={false} />
+                <FeeCard fee={ps.fee0to1.fee} toward={ps.fee0to1.toward} symbol0={ps.symbol0} symbol1={ps.symbol1} zeroForOne={true} deviationBps={ps.deviationBps} />
+                <FeeCard fee={ps.fee1to0.fee} toward={ps.fee1to0.toward} symbol0={ps.symbol0} symbol1={ps.symbol1} zeroForOne={false} deviationBps={ps.deviationBps} />
               </div>
             ) : (
               <div className="text-zinc-500 text-sm">Fee preview not available</div>
