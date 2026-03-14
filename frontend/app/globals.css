@@ -2,7 +2,6 @@
 
 /* ============================================================
    PegSentinel — globals.css
-   All readability improvements in one file. No page changes.
    ============================================================ */
 
 @theme inline {
@@ -12,88 +11,87 @@
   --color-background: #111827;
   --color-foreground: #f1f5f9;
 
-  /* ── Remap zinc palette — lift 2 steps for dark bg readability ──
-     zinc-500 was #71717a (~3.5:1 contrast) — now maps to slate-400
-     (#94a3b8, ~5:1). Every text-zinc-* in every file benefits.   */
+  /* Remap zinc palette — lift 2 steps for dark bg readability */
   --color-zinc-50:  #fafafa;
   --color-zinc-100: #f4f4f5;
   --color-zinc-200: #e4e4e7;
   --color-zinc-300: #d4d4d8;
-  --color-zinc-400: #cbd5e1;  /* slate-300 — clear labels              */
-  --color-zinc-500: #94a3b8;  /* slate-400 — readable secondary text   */
-  --color-zinc-600: #64748b;  /* slate-500 — dimmer but visible        */
-  --color-zinc-700: #334155;  /* borders                               */
-  --color-zinc-800: #1e293b;  /* card backgrounds                      */
-  --color-zinc-900: #0f172a;  /* deep backgrounds                      */
+  --color-zinc-400: #cbd5e1;
+  --color-zinc-500: #94a3b8;
+  --color-zinc-600: #64748b;
+  --color-zinc-700: #334155;
+  --color-zinc-800: #1e293b;
+  --color-zinc-900: #0f172a;
 
-  /* ── Lift emerald/amber/rose — /70 opacity variants too dim ── */
+  /* Lift accent colors — strip /70 opacity wash */
   --color-emerald-400: rgb(52 211 153);
   --color-amber-400:   rgb(251 191 36);
   --color-rose-400:    rgb(251 113 133);
   --color-cyan-400:    rgb(34 211 238);
   --color-violet-400:  rgb(167 139 250);
+
+  /* ── Font scale — bump every step up ~2px ── */
+  --text-xs:   1rem;   /* 14px  was 12px */
+  --text-sm:   1.125rem;       /* 16px  was 14px */
+  --text-base: 1.25rem;   /* 18px  was 16px */
+  --text-lg:   1.5rem;    /* 20px  was 18px */
+  --text-xl:   1.75rem;   /* 22px  was 20px */
+  --text-2xl:  2rem;   /* 26px  was 24px */
+  --text-3xl:  2.5rem;       /* 32px  was 30px */
+  --text-4xl:  3rem;     /* 40px  was 36px */
+  --text-5xl:  4rem;     /* 56px  was 48px */
 }
 
-/* ── CSS vars used directly in JSX ──────────────────────────── */
+/* ── CSS vars used directly in JSX ── */
 :root {
-  --bg:     #0f172a;   /* slate-900 — deep page background             */
-  --card:   #1e293b;   /* slate-800 — clear card surface               */
-  --inner:  #0f1f35;   /* darker recessed inputs                       */
-  --border: #334155;   /* slate-700 — always-visible borders           */
+  --bg:     #0f172a;
+  --card:   #1e293b;
+  --inner:  #0f1f35;
+  --border: #334155;
   --text:   #f1f5f9;
 }
 
-/* ── Base ────────────────────────────────────────────────────── */
+/* ── Base ── */
 html { font-size: 16px; }
 
 body {
   background: var(--bg);
   color: var(--text);
-  line-height: 1.6;
+  line-height: 1.65;
   -webkit-font-smoothing: antialiased;
 }
 
-/* ── Paragraph body copy ─────────────────────────────────────── */
+/* ── Paragraphs ── */
 p {
-  font-size: 0.9375rem; /* 15px */
-  line-height: 1.7;
+  font-size: 1rem; /* 16px */
+  line-height: 1.75;
 }
 
-/* ── Font size floor — arbitrary sizes bypass theme remapping ── */
+/* ── Arbitrary tiny sizes — floor at 14px ── */
 [class*="text-[10px]"],
-[class*="text-[11px]"] { font-size: 0.875rem; } /* 14px — text-sm     */
+[class*="text-[11px]"] { font-size: 0.875rem; }
 
-/* ── Font weight ─────────────────────────────────────────────── */
+/* ── Font weight ── */
 .font-light { font-weight: 400; }
 
-/* ── Monospace ───────────────────────────────────────────────── */
+/* ── Monospace ── */
 .font-mono {
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.01em;
 }
 
-/* ── Section labels (SectionLabel component) ─────────────────── */
-/* Uses text-[11px] + uppercase tracking + passed color prop.
-   The arbitrary size bypasses @theme — override here.
-   Also boost emerald-400/70 which is passed as the color prop.  */
+/* ── Section labels ── */
 [class*="tracking-[0.14em]"] {
-  font-size: 0.75rem;       /* 12px — keeps proportions but readable   */
+  font-size: 0.8125rem;
   letter-spacing: 0.1em;
-  opacity: 1 !important;    /* kill any /70 opacity                    */
+  opacity: 1 !important;
 }
 
-/* ── Opacity washes — strip from accent text ─────────────────── */
-/* /70, /60 on colored text is too dim on dark backgrounds        */
+/* ── Strip opacity wash from accent colors ── */
 [class*="text-emerald-400/"],
 [class*="text-cyan-400/"],
 [class*="text-violet-400/"],
 [class*="text-amber-400/"],
 [class*="text-rose-400/"] {
   opacity: 1 !important;
-}
-
-/* ── Layout — use full screen width ─────────────────────────── */
-/* Shell uses max-w-6xl (1152px) — extend to fill wider screens  */
-.max-w-6xl {
-  max-width: min(1440px, 95vw);
 }

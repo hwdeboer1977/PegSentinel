@@ -254,9 +254,7 @@ export function formatPrice(price: number): string {
 export function formatBalance(bal: bigint, decimals: number): string {
   const divisor = BigInt(10 ** decimals);
   const whole = bal / divisor;
-  const frac = bal % divisor;
-  const fracStr = frac.toString().padStart(decimals, "0").slice(0, 2);
-  return `${whole.toLocaleString()}.${fracStr}`;
+  return whole.toLocaleString();
 }
 
 
@@ -279,7 +277,7 @@ export function RegimeBadge({ regime, status }: { regime: Regime; status: Regime
     ok: "border-emerald-500/30 text-emerald-400 bg-emerald-500/8",
     warn: "border-amber-500/30 text-amber-400 bg-amber-500/8",
     bad: "border-red-500/30 text-red-400 bg-red-500/8",
-    na: "border-zinc-600 text-zinc-200 bg-zinc-500/8",
+    na: "border-zinc-600 text-zinc-400 bg-zinc-500/8",
   };
   return (
     <span className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-medium tracking-wider uppercase ${c[status]}`}>
@@ -297,9 +295,9 @@ export function Card({ children, className = "" }: { children: ReactNode; classN
   );
 }
 
-export function SectionLabel({ children, color = "text-zinc-300" }: { children: ReactNode; color?: string }) {
+export function SectionLabel({ children, color = "text-zinc-500" }: { children: ReactNode; color?: string }) {
   return (
-    <div className={`text-sm font-semibold uppercase tracking-[0.14em] mb-4 ${color}`}>
+    <div className={`text-[11px] font-semibold uppercase tracking-[0.14em] mb-4 ${color}`}>
       {children}
     </div>
   );
@@ -308,7 +306,7 @@ export function SectionLabel({ children, color = "text-zinc-300" }: { children: 
 export function DataRow({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="flex items-center justify-between py-1.5">
-      <span className="text-xs text-zinc-300">{label}</span>
+      <span className="text-xs text-zinc-500">{label}</span>
       <span className="text-xs font-mono text-zinc-200">{value}</span>
     </div>
   );
@@ -333,15 +331,15 @@ export function PegHero({
       </div>
       <div className={`text-lg font-mono ${devColor} mb-8`}>{formatBps(deviation)}</div>
       <div className="max-w-md mx-auto">
-        <div className="flex justify-between text-sm text-zinc-300 font-mono mb-2">
-          <span>$0.95</span><span className="text-zinc-300">$1.00</span><span>$1.05</span>
+        <div className="flex justify-between text-[10px] text-zinc-500 font-mono mb-2">
+          <span>$0.95</span><span className="text-zinc-500">$1.00</span><span>$1.05</span>
         </div>
         <div className="relative h-1.5 bg-[var(--card)] rounded-full">
           <div className="absolute left-1/2 -translate-x-1/2 -top-1 w-px h-3.5 bg-zinc-600" />
           <div className={`absolute top-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full ${dotColor} shadow-[0_0_10px] transition-all duration-700`}
             style={{ left: `calc(${gaugePos}% - 7px)` }} />
         </div>
-        <div className="mt-4 text-xs text-zinc-300 font-mono">Tick {currentTick}</div>
+        <div className="mt-4 text-xs text-zinc-500 font-mono">Tick {currentTick}</div>
       </div>
     </div>
   );
@@ -354,13 +352,13 @@ export function FeeCard({ fee, toward, symbol0, symbol1, zeroForOne }: {
   return (
     <div className={`p-4 rounded-xl border ${toward ? "bg-emerald-500/[0.04] border-emerald-500/20" : "bg-rose-500/[0.04] border-rose-500/20"}`}>
       <div className="flex items-center justify-between mb-3">
-        <span className="text-xs text-zinc-200 font-mono">{dir}</span>
-        <span className={`text-sm font-semibold uppercase tracking-wider ${toward ? "text-emerald-400" : "text-rose-400"}`}>
+        <span className="text-xs text-zinc-400 font-mono">{dir}</span>
+        <span className={`text-[10px] font-semibold uppercase tracking-wider ${toward ? "text-emerald-400" : "text-rose-400"}`}>
           {toward ? "TOWARD PEG" : "AWAY FROM PEG"}
         </span>
       </div>
       <span className="text-3xl font-mono font-light text-zinc-100">{formatFee(fee)}</span>
-      <span className="text-sm text-zinc-300 ml-2">swap fee</span>
+      <span className="text-[11px] text-zinc-500 ml-2">swap fee</span>
     </div>
   );
 }
@@ -378,9 +376,9 @@ export function RangeViz({ currentTick, tickLower, tickUpper, regime }: {
 
   return (
     <div>
-      <div className="flex justify-between text-sm text-zinc-300 font-mono mb-2">
+      <div className="flex justify-between text-[10px] text-zinc-500 font-mono mb-2">
         {["$0.90", "$0.95", "$1.00", "$1.05", "$1.10"].map((p) => (
-          <span key={p} className={p === "$1.00" ? "text-zinc-200" : ""}>{p}</span>
+          <span key={p} className={p === "$1.00" ? "text-zinc-400" : ""}>{p}</span>
         ))}
       </div>
       <div className="relative h-10 bg-[var(--inner)] rounded-lg overflow-hidden">
@@ -391,7 +389,7 @@ export function RangeViz({ currentTick, tickLower, tickUpper, regime }: {
           style={{ left: `${Math.max(0, Math.min(100, currentPos))}%` }} />
       </div>
       <div className="flex justify-between items-center mt-2">
-        <span className="text-xs text-zinc-300">
+        <span className="text-xs text-zinc-500">
           Range: <span className="text-zinc-200 font-mono">${formatPrice(tickToPrice(tickLower))} – ${formatPrice(tickToPrice(tickUpper))}</span>
         </span>
         <span className={`text-xs font-medium ${inRange ? "text-emerald-400" : "text-red-400"}`}>

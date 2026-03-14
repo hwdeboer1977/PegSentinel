@@ -22,7 +22,7 @@ export default function OverviewPage() {
               <RegimeBadge regime={ps.regimeName} status={ps.regimeStatus} />
             </div>
             <div className="text-5xl font-mono font-extralight text-zinc-50 tracking-tighter">
-              ${ps.currentPrice > 0 ? ps.currentPrice.toFixed(4) : "—"}
+              ${ps.currentPrice > 0 ? ps.currentPrice.toFixed(3) : "—"}
             </div>
           </div>
           <div className="text-right">

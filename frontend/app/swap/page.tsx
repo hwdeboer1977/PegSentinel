@@ -12,7 +12,7 @@ export default function SwapPage() {
       <div className="flex items-center justify-between mb-6 px-1">
         <div className="flex items-center gap-4">
           <div className="text-3xl font-mono font-extralight text-zinc-50 tracking-tighter">
-            ${ps.currentPrice.toFixed(4)}
+            ${ps.currentPrice.toFixed(3)}
           </div>
           <span className={`text-sm font-mono ${
             Math.abs(ps.deviationBps) < 25 ? "text-emerald-400" : Math.abs(ps.deviationBps) < 100 ? "text-amber-400" : "text-red-400"
@@ -20,13 +20,13 @@ export default function SwapPage() {
             {ps.deviationBps >= 0 ? "+" : ""}{(ps.deviationBps / 100).toFixed(2)}%
           </span>
         </div>
-        <div className="text-xs text-zinc-300 font-mono">Tick {ps.currentTick}</div>
+        <div className="text-xs text-zinc-500 font-mono">Tick {ps.currentTick}</div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         {/* Left: Swap Interface */}
         <Card>
-          <SectionLabel color="text-cyan-400">Swap</SectionLabel>
+          <SectionLabel color="text-cyan-400/70">Swap</SectionLabel>
           <div className="space-y-4">
             {!ps.walletConnected ? (
               <button onClick={ps.connectWallet}
@@ -34,7 +34,7 @@ export default function SwapPage() {
                 Connect Wallet
               </button>
             ) : (
-              <div className="text-xs text-zinc-300 font-mono bg-[var(--inner)] rounded-lg px-3 py-2 border border-[var(--border)]">
+              <div className="text-xs text-zinc-500 font-mono bg-[var(--inner)] rounded-lg px-3 py-2 border border-[var(--border)]">
                 Connected: {ps.walletAddress?.slice(0, 6)}…{ps.walletAddress?.slice(-4)}
               </div>
             )}
@@ -48,7 +48,7 @@ export default function SwapPage() {
                       className={`py-2.5 rounded-xl text-xs font-semibold transition-all border ${
                         ps.swapDirection === dir
                           ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-400"
-                          : "bg-[var(--inner)] border-[var(--border)] text-zinc-300 hover:border-zinc-600"
+                          : "bg-[var(--inner)] border-[var(--border)] text-zinc-500 hover:border-zinc-600"
                       }`}>
                       {dir === "0to1" ? `${ps.symbol0} → ${ps.symbol1}` : `${ps.symbol1} → ${ps.symbol0}`}
                     </button>
@@ -57,7 +57,7 @@ export default function SwapPage() {
 
                 {/* Amount input */}
                 <div>
-                  <label className="text-sm text-zinc-300 mb-1.5 block">
+                  <label className="text-[11px] text-zinc-500 mb-1.5 block">
                     Amount ({ps.swapDirection === "0to1" ? ps.symbol0 : ps.symbol1})
                   </label>
                   <input
@@ -72,7 +72,7 @@ export default function SwapPage() {
                 {/* Fee preview */}
                 <div className="bg-[var(--inner)] rounded-xl p-3.5 border border-[var(--border)] space-y-2">
                   <div className="flex justify-between text-xs">
-                    <span className="text-zinc-300">Expected Fee</span>
+                    <span className="text-zinc-500">Expected Fee</span>
                     <span className="font-mono text-zinc-200">
                       {ps.swapDirection === "0to1"
                         ? (ps.fee0to1 ? formatFee(ps.fee0to1.fee) : "—")
@@ -80,7 +80,7 @@ export default function SwapPage() {
                     </span>
                   </div>
                   <div className="flex justify-between text-xs">
-                    <span className="text-zinc-300">Direction</span>
+                    <span className="text-zinc-500">Direction</span>
                     <span className={`font-medium ${
                       (ps.swapDirection === "0to1" ? ps.fee0to1?.toward : ps.fee1to0?.toward)
                         ? "text-emerald-400" : "text-amber-400"
@@ -97,7 +97,7 @@ export default function SwapPage() {
                   disabled={ps.swapLoading || !ps.swapAmount}
                   className={`w-full py-3.5 rounded-xl font-semibold text-sm transition-all ${
                     ps.swapLoading || !ps.swapAmount
-                      ? "bg-[var(--card)] text-zinc-300 cursor-not-allowed border border-[var(--border)]"
+                      ? "bg-[var(--card)] text-zinc-500 cursor-not-allowed border border-[var(--border)]"
                       : "bg-gradient-to-r from-cyan-500 to-emerald-500 text-[var(--bg)] hover:from-cyan-400 hover:to-emerald-400 shadow-lg shadow-cyan-500/10"
                   }`}
                 >
@@ -124,38 +124,38 @@ export default function SwapPage() {
         {/* Right: Dynamic Fee Overview */}
         <div className="space-y-5">
           <Card>
-            <SectionLabel color="text-cyan-400">Layer 1 · Dynamic Fees</SectionLabel>
+            <SectionLabel color="text-cyan-400/70">Layer 1 · Dynamic Fees</SectionLabel>
             {ps.fee0to1 && ps.fee1to0 ? (
               <div className="space-y-3">
                 <FeeCard fee={ps.fee0to1.fee} toward={ps.fee0to1.toward} symbol0={ps.symbol0} symbol1={ps.symbol1} zeroForOne={true} />
                 <FeeCard fee={ps.fee1to0.fee} toward={ps.fee1to0.toward} symbol0={ps.symbol0} symbol1={ps.symbol1} zeroForOne={false} />
               </div>
             ) : (
-              <div className="text-zinc-300 text-sm">Fee preview not available</div>
+              <div className="text-zinc-500 text-sm">Fee preview not available</div>
             )}
-            <p className="text-sm text-zinc-300 mt-4">
+            <p className="text-[11px] text-zinc-500 mt-4">
               Lower fees encourage swaps toward $1.00 peg, higher fees discourage swaps away
             </p>
           </Card>
 
           {/* How it works */}
           <Card>
-            <SectionLabel color="text-zinc-300">How Dynamic Fees Work</SectionLabel>
-            <div className="space-y-3 text-xs text-zinc-200 leading-relaxed">
+            <SectionLabel color="text-zinc-500">How Dynamic Fees Work</SectionLabel>
+            <div className="space-y-3 text-xs text-zinc-400 leading-relaxed">
               <p>
                 The PegSentinel hook intercepts every swap and adjusts the fee in real-time based on the current price deviation from the $1.00 peg.
               </p>
               <div className="grid grid-cols-2 gap-3 py-1">
                 <div className="p-3 rounded-lg bg-emerald-500/[0.04] border border-emerald-500/15">
-                  <div className="text-sm text-emerald-400 uppercase tracking-wider mb-1">Toward Peg</div>
+                  <div className="text-[10px] text-emerald-400/70 uppercase tracking-wider mb-1">Toward Peg</div>
                   <div className="text-zinc-300">Lower fees incentivize arbitrageurs to restore the peg</div>
                 </div>
                 <div className="p-3 rounded-lg bg-rose-500/[0.04] border border-rose-500/15">
-                  <div className="text-sm text-rose-400 uppercase tracking-wider mb-1">Away from Peg</div>
+                  <div className="text-[10px] text-rose-400/70 uppercase tracking-wider mb-1">Away from Peg</div>
                   <div className="text-zinc-300">Higher fees penalize trades that push the price further off-peg</div>
                 </div>
               </div>
-              <p className="text-zinc-300">
+              <p className="text-zinc-500">
                 This asymmetric fee model creates a self-correcting mechanism — the greater the deviation, the stronger the incentive to restore equilibrium.
               </p>
             </div>
