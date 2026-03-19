@@ -19,31 +19,99 @@ interface IERC20Metadata {
     function decimals() external view returns (uint8);
 }
 
+/**
+ * @title PegSentinelHook
+ * @notice Uniswap v4 hook that applies directional dynamic fees based on pool price vs peg.
+ *
+ * Swaps that push price away from $1 are penalised with higher fees (up to MAX_FEE).
+ * Swaps that help restore the peg are rewarded with lower fees (down to MIN_FEE).
+ * This creates an asymmetric cost structure that makes depegging expensive and
+ * arb-back-to-peg attractive.
+ *
+ * Fee logic is delegated to PegFeeMath.compute(). This contract handles:
+ *   - hook permission registration
+ *   - dynamic fee enforcement via OVERRIDE_FEE_FLAG
+ *   - price decoding from sqrtPriceX96
+ *   - direction classification (toward/away from peg)
+ */
 contract PegSentinelHook is BaseHook {
     using LPFeeLibrary for uint24;
     using PoolIdLibrary for PoolKey;
 
+    // ---------------------------------------------------------------------------
     // Fee parameters
+    // ---------------------------------------------------------------------------
+
+    /// @notice Minimum fee (0.05%) — applied to strongly restorative swaps.
     uint24  public constant MIN_FEE = 500;
+
+    /// @notice Base fee (0.30%) — applied near the peg within the deadzone.
     uint24  public constant BASE_FEE = 3000;
+
+    /// @notice Maximum fee (10%) — applied to maximally destabilising swaps.
     uint24  public constant MAX_FEE = 100_000;
+
+    /// @notice Deadzone around peg in basis points. Price deviation below this
+    ///         is treated as "at peg" and charged the BASE_FEE. (25 bps = 0.25%)
     uint256 public constant DEADZONE_BPS = 25;
+
+    /// @notice Deviation in bps at which the fee saturates at MAX_FEE for harmful
+    ///         direction swaps. Beyond this point no further fee increase is applied. (50%)
     uint256 public constant ARB_TRIGGER_BPS = 5_000;
+
+    /// @notice Fee slope scalar for swaps toward peg. Lower value = gentler discount curve.
     uint256 public constant SLOPE_TOWARD = 150;
+
+    /// @notice Fee slope scalar for swaps away from peg. Higher value = steeper penalty curve.
     uint256 public constant SLOPE_AWAY = 1200;
 
-    // Hardcoded peg: 1 USD = 1e18
+    // ---------------------------------------------------------------------------
+    // Peg reference
+    // ---------------------------------------------------------------------------
+
+    /// @notice Target peg price expressed as a 1e18-scaled ratio (token1 per token0).
+    ///         For a USDC/USDT pair both at $1 this is 1e18.
     uint256 public constant PEG_PRICE_1E18 = 1e18;
 
-    // Token addresses (set your stablecoin pair here)
+    // ---------------------------------------------------------------------------
+    // Token metadata (immutable, set once at construction)
+    // ---------------------------------------------------------------------------
+
+    /// @notice Canonical token0 address (lower address of the sorted pair).
     address public immutable token0;
+
+    /// @notice Canonical token1 address (higher address of the sorted pair).
     address public immutable token1;
+
+    /// @notice Decimal precision of token0. Used to normalise sqrtPrice to 1e18.
     uint8   public immutable decimals0;
+
+    /// @notice Decimal precision of token1. Used to normalise sqrtPrice to 1e18.
     uint8   public immutable decimals1;
 
+    // ---------------------------------------------------------------------------
+    // Events / errors
+    // ---------------------------------------------------------------------------
+
+    /// @notice Emitted on every swap with the chosen fee and debug context.
+    /// @param rawFee     The fee value before the override flag is applied.
+    /// @param withFlag   rawFee OR'd with OVERRIDE_FEE_FLAG, as passed to the pool.
+    /// @param toward     True if the swap direction moves price toward the peg.
+    /// @param devBps     Current price deviation from peg in basis points.
     event FeeChosen(uint24 rawFee, uint24 withFlag, bool toward, uint256 devBps);
+
+    /// @notice Reverts if the pool is not initialised with the dynamic fee flag.
     error MustUseDynamicFee();
 
+    // ---------------------------------------------------------------------------
+    // Constructor
+    // ---------------------------------------------------------------------------
+
+    /**
+     * @param _poolManager  The Uniswap v4 PoolManager this hook is registered with.
+     * @param _tokenA       One token of the stablecoin pair (order does not matter).
+     * @param _tokenB       The other token of the stablecoin pair.
+     */
     constructor(
         IPoolManager _poolManager,
         address _tokenA,
@@ -60,6 +128,15 @@ contract PegSentinelHook is BaseHook {
         decimals1 = IERC20Metadata(t1).decimals();
     }
 
+    // ---------------------------------------------------------------------------
+    // Hook permissions
+    // ---------------------------------------------------------------------------
+
+    /**
+     * @notice Declares which hook callbacks this contract implements.
+     *         Only beforeInitialize and beforeSwap are active; all others are disabled
+     *         to minimise gas overhead on unrelated pool operations.
+     */
     function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
         return Hooks.Permissions({
             beforeInitialize: true,
@@ -79,6 +156,15 @@ contract PegSentinelHook is BaseHook {
         });
     }
 
+    // ---------------------------------------------------------------------------
+    // Hook callbacks
+    // ---------------------------------------------------------------------------
+
+    /**
+     * @notice Enforces that the pool uses a dynamic fee. Called once at pool initialisation.
+     *         Reverts with MustUseDynamicFee if the pool fee slot does not have the
+     *         dynamic fee flag set.
+     */
     function _beforeInitialize(address, PoolKey calldata key, uint160)
         internal override pure
         returns (bytes4)
@@ -87,6 +173,12 @@ contract PegSentinelHook is BaseHook {
         return this.beforeInitialize.selector;
     }
 
+    /**
+     * @notice Computes and overrides the swap fee on every swap.
+     *         Reads current sqrtPrice from slot0, determines swap direction relative
+     *         to peg, delegates fee calculation to PegFeeMath, then returns the fee
+     *         with OVERRIDE_FEE_FLAG set so the pool accepts it as a per-swap override.
+     */
     function _beforeSwap(
         address,
         PoolKey calldata key,
@@ -99,6 +191,18 @@ contract PegSentinelHook is BaseHook {
         return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, feeWithFlag);
     }
 
+    // ---------------------------------------------------------------------------
+    // Internal fee logic
+    // ---------------------------------------------------------------------------
+
+    /**
+     * @notice Core fee computation. Reads slot0 for the current price, converts it
+     *         to a 1e18-scaled ratio, classifies swap direction, and calls PegFeeMath.
+     * @param key        The pool key identifying the pool.
+     * @param zeroForOne True if the swap sells token0 for token1.
+     * @return fee       The computed fee in hundredths of a bip (e.g. 3000 = 0.30%).
+     * @return dbg       Debug struct with deviation, direction, and intermediate values.
+     */
     function _computePegFee(PoolKey calldata key, bool zeroForOne)
         internal view
         returns (uint24 fee, PegDebug memory dbg)
@@ -125,6 +229,18 @@ contract PegSentinelHook is BaseHook {
         );
     }
 
+    /**
+     * @notice Converts a Uniswap v4 sqrtPriceX96 value to a 1e18-scaled price ratio,
+     *         accounting for token decimal differences.
+     *
+     *         sqrtPriceX96 encodes sqrt(token1/token0) * 2^96.
+     *         Squaring and dividing by 2^96 gives the raw ratio in token units.
+     *         The decimal adjustment normalises to a common 1e18 basis so the hook
+     *         can compare against PEG_PRICE_1E18 regardless of token precision.
+     *
+     * @param sqrtP  The sqrtPriceX96 value from slot0.
+     * @return       Price of token0 in token1 terms, scaled to 1e18.
+     */
     function _decodePriceE18(uint160 sqrtP) internal view returns (uint256) {
         uint256 s = uint256(sqrtP);
         uint256 q96 = 1 << 96;
@@ -143,6 +259,20 @@ contract PegSentinelHook is BaseHook {
         }
     }
 
+    /**
+     * @notice Determines whether a swap moves the pool price toward or away from peg.
+     *
+     *         In Uniswap v4, zeroForOne=true means selling token0 → price of token0
+     *         falls (more token1 per token0, so ratio goes up if token1 is the numerator,
+     *         or down if token0 is). The logic here interprets the price as token1/token0:
+     *           - price below peg → need price to rise → restorative direction is !zeroForOne
+     *           - price above peg → need price to fall → restorative direction is zeroForOne
+     *
+     * @param zeroForOne    True if swapping token0 for token1.
+     * @param lpPrice1e18   Current pool price scaled to 1e18.
+     * @param pegPrice1e18  Target peg price scaled to 1e18 (always 1e18 for a $1 peg).
+     * @return              True if this swap helps restore the peg.
+     */
     function _isTowardPeg(
         bool zeroForOne,
         uint256 lpPrice1e18,
@@ -156,12 +286,33 @@ contract PegSentinelHook is BaseHook {
         return true; // at peg
     }
 
+    // ---------------------------------------------------------------------------
+    // View helpers
+    // ---------------------------------------------------------------------------
+
+    /**
+     * @notice Off-chain fee preview for a given swap direction.
+     *         Useful for frontends and keepers to display the expected fee before
+     *         submitting a transaction. Reads live slot0 state so the result reflects
+     *         the current pool price.
+     * @param key        The pool key to query.
+     * @param zeroForOne True if the swap sells token0 for token1.
+     * @return fee       The fee that would be applied to this swap right now.
+     * @return dbg       Debug struct with deviation, slope, and direction fields.
+     */
     function previewFee(PoolKey calldata key, bool zeroForOne)
         external view returns (uint24 fee, PegDebug memory dbg)
     {
         return _computePegFee(key, zeroForOne);
     }
 
+    /**
+     * @notice Constructs a PoolKey for the dynamic-fee pool managed by this hook.
+     *         Convenience helper for scripts and tests — avoids having to manually
+     *         assemble the key with the correct fee flag (0x800000) and hook address.
+     * @param tickSpacing  The tick spacing configured for the pool.
+     * @return             A fully populated PoolKey ready for use with PoolManager calls.
+     */
     function keyDynamic(int24 tickSpacing) public view returns (PoolKey memory) {
         return PoolKey({
             currency0: Currency.wrap(token0),
